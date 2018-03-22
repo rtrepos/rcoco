@@ -1,7 +1,3 @@
-#include <R.h>
-#include <Rinternals.h>
-#include <Rdefines.h>
-
 
 /************************************************************************
  * WARNING
@@ -29,7 +25,7 @@
  * It is the authoritative reference, if any function deviates from the documented behavior it is considered
  * a bug. See the function definitions for their detailed descriptions.
  */
-
+ 
 #ifndef __COCO_H__
 #define __COCO_H__
 
@@ -76,7 +72,7 @@ extern "C" {
  * Automatically updated by do.py.
  */
 /**@{*/
-static const char coco_version[32] = "2.0.1";
+static const char coco_version[32] = "2.2.1";
 /**@}*/
 
 /***********************************************************************************************************/
@@ -306,6 +302,11 @@ coco_problem_t *coco_problem_add_observer(coco_problem_t *problem, coco_observer
  */
 coco_problem_t *coco_problem_remove_observer(coco_problem_t *problem, coco_observer_t *observer);
 
+/**
+ * @brief Returns result folder name, where logger output is written. 
+ */
+const char *coco_observer_get_result_folder(const coco_observer_t *observer);
+
 /**@}*/
 
 /***********************************************************************************************************/
@@ -325,7 +326,7 @@ void coco_evaluate_function(coco_problem_t *problem, const double *x, double *y)
 void coco_evaluate_constraint(coco_problem_t *problem, const double *x, double *y);
 
 /**
- * @brief Recommends a solution as the current best guesses to the problem.
+ * @brief Recommends a solution as the current best guesses to the problem. Not implemented yet.
  */
 void coco_recommend_solution(coco_problem_t *problem, const double *x);
 
@@ -360,9 +361,14 @@ size_t coco_problem_get_number_of_objectives(const coco_problem_t *problem);
 size_t coco_problem_get_number_of_constraints(const coco_problem_t *problem);
 
 /**
- * @brief Returns the number of evaluations done on the problem.
+ * @brief Returns the number of objective function evaluations done on the problem.
  */
 size_t coco_problem_get_evaluations(const coco_problem_t *problem);
+
+/**
+ * @brief Returns the number of constraint function evaluations done on the problem.
+ */
+size_t coco_problem_get_evaluations_constraints(const coco_problem_t *problem);
 
 /**
  * @brief Returns 1 if the final target was hit, 0 otherwise.
@@ -390,6 +396,12 @@ const double *coco_problem_get_smallest_values_of_interest(const coco_problem_t 
  * the decision space.
  */
 const double *coco_problem_get_largest_values_of_interest(const coco_problem_t *problem);
+
+/**
+ * @brief For multi-objective problems, returns a vector of largest values of interest in each objective.
+ * Currently, this equals the nadir point. For single-objective problems it raises an error.
+ */
+const double *coco_problem_get_largest_fvalues_of_interest(const coco_problem_t *problem);
 
 /**
  * @brief Returns the problem_index of the problem in its current suite.
@@ -702,13 +714,6 @@ typedef void (*coco_data_free_function_t)(void *data);
 typedef void (*coco_problem_free_function_t)(coco_problem_t *problem);
 
 /**
- * @brief The initial solution function type.
- *
- * This is a template for functions that return an initial solution of the problem.
- */
-typedef void (*coco_initial_solution_function_t)(const coco_problem_t *problem, double *y);
-
-/**
  * @brief The evaluate function type.
  *
  * This is a template for functions that perform an evaluation of the problem (to evaluate the problem
@@ -794,9 +799,9 @@ typedef struct {
  */
 struct coco_problem_s {
 
-  coco_initial_solution_function_t initial_solution;  /**< @brief  The function for creating an initial solution. */
   coco_evaluate_function_t evaluate_function;         /**< @brief  The function for evaluating the problem. */
   coco_evaluate_function_t evaluate_constraint;       /**< @brief  The function for evaluating the constraints. */
+  coco_evaluate_function_t evaluate_gradient;         /**< @brief  The function for evaluating the constraints. */
   coco_recommend_function_t recommend_solution;       /**< @brief  The function for recommending a solution. */
   coco_problem_free_function_t problem_free_function; /**< @brief  The function for freeing this problem. */
 
@@ -808,6 +813,7 @@ struct coco_problem_s {
   double *smallest_values_of_interest; /**< @brief The lower bounds of the ROI in the decision space. */
   double *largest_values_of_interest;  /**< @brief The upper bounds of the ROI in the decision space. */
 
+  double *initial_solution;            /**< @brief Initial feasible solution. */
   double *best_value;                  /**< @brief Optimal (smallest) function value */
   double *nadir_value;                 /**< @brief The nadir point (defined when number_of_objectives > 1) */
   double *best_parameter;              /**< @brief Optimal decision vector (defined only when unique) */
@@ -816,9 +822,12 @@ struct coco_problem_s {
   char *problem_id;                    /**< @brief Problem ID (unique in the containing suite) */
   char *problem_type;                  /**< @brief Problem type */
 
-  size_t evaluations;                  /**< @brief Number of evaluations performed on the problem. */
+  size_t evaluations;                  /**< @brief Number of objective function evaluations performed on the problem. */
+  size_t evaluations_constraints;      /**< @brief Number of constraint function evaluations performed on the problem. */
 
   /* Convenience fields for output generation */
+  /* If at some point in time these arrays are changed to pointers, checks need to be added in the code to make sure
+   * they are not NULL.*/
 
   double final_target_delta[1];        /**< @brief Final target delta. */
   double best_observed_fvalue[1];      /**< @brief The best observed value so far. */
@@ -897,6 +906,10 @@ struct coco_suite_s {
 
 };
 
+static void bbob_evaluate_gradient(coco_problem_t *problem, const double *x, double *y);
+
+void bbob_problem_best_parameter_print(const coco_problem_t *problem);
+
 #ifdef __cplusplus
 }
 #endif
@@ -922,7 +935,7 @@ struct coco_suite_s {
  * that need these definitions should include this file before any system headers.
  */
 
-#ifndef __COCO_PLATFORM__
+#ifndef __COCO_PLATFORM__ 
 #define __COCO_PLATFORM__
 
 #include <stddef.h>
@@ -1014,9 +1027,10 @@ int mkdir(const char *pathname, mode_t mode);
 #include <time.h>
 #include <assert.h>
 #include <ctype.h>
+#include <errno.h>
 
-#line 16 "code-experiments/src/coco_utilities.c"
 #line 17 "code-experiments/src/coco_utilities.c"
+#line 18 "code-experiments/src/coco_utilities.c"
 #line 1 "code-experiments/src/coco_string.c"
 /**
  * @file coco_string.c
@@ -1490,7 +1504,7 @@ static char *coco_string_trim(char *string) {
 
 	return string;
 }
-#line 18 "code-experiments/src/coco_utilities.c"
+#line 19 "code-experiments/src/coco_utilities.c"
 
 /***********************************************************************************************************/
 
@@ -1632,57 +1646,72 @@ static int coco_file_exists(const char *path) {
 }
 
 /**
- * @brief Calls the right mkdir() method (depending on the platform).
+ * @brief Calls the right mkdir() method (depending on the platform) with full privileges for the user. 
+ * If the created directory has not existed before, returns 0, otherwise returns 1. If the directory has 
+ * not been created, a coco_error is raised. 
  *
  * @param path The directory path.
  *
- * @return 0 on successful completion, and -1 on error.
+ * @return 0 if the created directory has not existed before and 1 otherwise.
  */
 static int coco_mkdir(const char *path) {
+  int result = 0;
+
 #if _MSC_VER
-  return _mkdir(path);
+  result = _mkdir(path);
 #elif defined(__MINGW32__) || defined(__MINGW64__)
-  return mkdir(path);
+  result = mkdir(path);
 #else
-  return mkdir(path, S_IRWXU);
+  result = mkdir(path, S_IRWXU);
 #endif
+
+  if (result == 0)
+    return 0;
+  else if (errno == EEXIST)
+    return 1;
+  else 
+    coco_error("coco_mkdir(): unable to create %s, mkdir error: %s", path, strerror(errno));
+    return 1; /* Never reached */
 }
 
 /**
- * @brief Creates a directory with full privileges for the user.
- *
- * @note Should work cross-platform.
+ * @brief Creates a directory (possibly having to create nested directories). If the last created directory 
+ * has not existed before, returns 0, otherwise returns 1.
  *
  * @param path The directory path.
+ *
+ * @return 0 if the created directory has not existed before and 1 otherwise.
  */
-static void coco_create_directory(const char *path) {
-  char *tmp = NULL;
-  char *p;
-  size_t len = strlen(path);
+static int coco_create_directory(const char *path) {
+  char *path_copy = NULL;
+  char *tmp, *p;
   char path_sep = coco_path_separator[0];
+  size_t len = strlen(path);
 
-  /* Nothing to do if the path exists. */
-  if (coco_directory_exists(path))
-    return;
+  int result = 0;
 
-  tmp = coco_strdup(path);
-  /* Remove possible trailing slash */
+  path_copy = coco_strdup(path);
+  tmp = path_copy;
+
+  /* Remove possible leading and trailing (back)slash */
   if (tmp[len - 1] == path_sep)
     tmp[len - 1] = 0;
-  for (p = tmp + 1; *p; p++) {
+  if (tmp[0] == path_sep)
+    tmp++;
+
+  /* Iterate through nested directories (does nothing if directories are not nested) */
+  for (p = tmp; *p; p++) {
     if (*p == path_sep) {
       *p = 0;
-      if (!coco_directory_exists(tmp)) {
-        if (0 != coco_mkdir(tmp))
-          coco_error("coco_create_path(): failed creating %s", tmp);
-      }
+      coco_mkdir(tmp);
       *p = path_sep;
     }
   }
-  if (0 != coco_mkdir(tmp))
-    coco_error("coco_create_path(): failed creating %s", tmp);
-  coco_free_memory(tmp);
-  return;
+  
+  /* Create the last nested or only directory */
+  result = coco_mkdir(tmp);
+  coco_free_memory(path_copy);
+  return result;
 }
 
 /* Commented to silence the compiler (unused function warning) */
@@ -1727,20 +1756,19 @@ static void coco_create_unique_filename(char **file_name) {
 #endif
 
 /**
- * @brief Creates a unique directory from the given path.
+ * @brief Creates a directory that has not existed before.
  *
  * If the given path does not yet exit, it is left as is, otherwise it is changed(!) by appending a number
- * to it. If path already exists, path-01 will be tried. If this one exists as well, path-02 will be tried,
- * and so on. If path-99 exists as well, the function throws an error.
+ * to it. If path already exists, path-001 will be tried. If this one exists as well, path-002 will be tried,
+ * and so on. If path-999 exists as well, an error is raised.
  */
 static void coco_create_unique_directory(char **path) {
 
   int counter = 1;
   char *new_path;
 
-  /* Create the path if it does not yet exist */
-  if (!coco_directory_exists(*path)) {
-    coco_create_directory(*path);
+  if (coco_create_directory(*path) == 0) {
+	/* Directory created */
     return;
   }
 
@@ -1748,10 +1776,10 @@ static void coco_create_unique_directory(char **path) {
 
     new_path = coco_strdupf("%s-%03d", *path, counter);
 
-    if (!coco_directory_exists(new_path)) {
+    if (coco_create_directory(new_path) == 0) {
+      /* Directory created */
       coco_free_memory(*path);
       *path = new_path;
-      coco_create_directory(*path);
       return;
     } else {
       counter++;
@@ -1760,7 +1788,7 @@ static void coco_create_unique_directory(char **path) {
 
   }
 
-  coco_error("coco_create_unique_path(): could not create a unique path with name %s", *path);
+  coco_error("coco_create_unique_directory(): unable to create unique directory %s", *path);
   return; /* Never reached */
 }
 
@@ -2242,9 +2270,12 @@ static int coco_options_read_string(const char *options, const char *name, char 
 
 /**
  * @brief Reads (possibly delimited) values from options using the form "name1: value1,value2,value3 name2: value4",
- * i.e. reads all characters from the corresponding name up to the next whitespace or end of string.
+ * i.e. reads all characters from the corresponding name up to the next alphabetic character or end of string,
+ * ignoring white-space characters.
  *
  * Formatting requirements:
+ * - names have to start with alphabetic characters
+ * - values cannot include alphabetic characters
  * - name and value need to be separated by a colon (spaces are optional)
  *
  * @return The number of successful assignments.
@@ -2262,18 +2293,18 @@ static int coco_options_read_values(const char *options, const char *name, char 
     return 0;
   i2 = i1 + coco_strfind(&options[i1], ":") + 1;
 
-  /* Remove trailing white spaces */
-  while (isspace((unsigned char) options[i2]))
-    i2++;
-
   if (i2 <= i1) {
     return 0;
   }
 
   i = 0;
-  while (!isspace((unsigned char) options[i2 + i]) && (options[i2 + i] != '\0')) {
-    pointer[i] = options[i2 + i];
-    i++;
+  while (!isalpha((unsigned char) options[i2 + i]) && (options[i2 + i] != '\0')) {
+    if(isspace((unsigned char) options[i2 + i])) {
+        i2++;
+    } else {
+        pointer[i] = options[i2 + i];
+        i++;
+    }
   }
   pointer[i] = '\0';
   return i;
@@ -2377,6 +2408,70 @@ static int coco_is_inf(const double x) {
 	return (isinf(x) || (x <= -INFINITY) || (x >= INFINITY));
 }
 
+/**
+ * @brief Returns 1 if the input vector of dimension dim contains no NaN of inf values, and 0 otherwise.
+ */
+static int coco_vector_isfinite(const double *x, const size_t dim) {
+	size_t i;
+	for (i = 0; i < dim; i++) {
+		if (coco_is_nan(x[i]) || coco_is_inf(x[i]))
+		  return 0;
+	}
+	return 1;
+}
+
+/**
+ * @brief Returns 1 if the point x is feasible, and 0 otherwise.
+ *
+ * Allows constraint_values == NULL, otherwise constraint_values
+ * must be a valid double* pointer and contains the g-values of x
+ * on "return".
+ * 
+ * Any point x containing NaN or inf values is considered infeasible.
+ *
+ * This function is (and should be) used internally only, and does not
+ * increase the counter of constraint function evaluations.
+ *
+ * @param problem The given COCO problem.
+ * @param x Decision vector.
+ * @param constraint_values Vector of contraints values resulting from evaluation.
+ */
+static int coco_is_feasible(coco_problem_t *problem,
+                     const double *x,
+                     double *constraint_values) {
+
+  size_t i;
+  double *cons_values = constraint_values;
+  int ret_val = 1;
+
+  /* Return 0 if the decision vector contains any INFINITY or NaN values */
+  if (!coco_vector_isfinite(x, coco_problem_get_dimension(problem)))
+    return 0;
+
+  if (coco_problem_get_number_of_constraints(problem) <= 0)
+    return 1;
+
+  assert(problem != NULL);
+  assert(problem->evaluate_constraint != NULL);
+  
+  if (constraint_values == NULL)
+     cons_values = coco_allocate_vector(problem->number_of_constraints);
+
+  problem->evaluate_constraint(problem, x, cons_values);
+  /* coco_evaluate_constraint(problem, x, cons_values) increments problem->evaluations_constraints counter */
+
+  for(i = 0; i < coco_problem_get_number_of_constraints(problem); ++i) {
+    if (cons_values[i] > 0.0) {
+      ret_val = 0;
+      break;
+    }
+  }
+
+  if (constraint_values == NULL)
+    coco_free_memory(cons_values);
+  return ret_val;
+}
+
 /**@}*/
 
 /***********************************************************************************************************/
@@ -2423,6 +2518,29 @@ static size_t coco_count_numbers(const size_t *numbers, const size_t max_count, 
   return count;
 }
 
+/**
+ * @brief Normalizes vector x and multiplies each componenent by alpha.
+ *
+ */
+static void coco_scale_vector(double *x, size_t dimension, double alpha) {
+  
+  size_t i;
+  double norm = 0.0;
+  
+  assert(x);
+  
+  for (i = 0; i < dimension; ++i)
+    norm += x[i] * x[i];
+    
+  norm = sqrt(norm);
+  
+  if (norm != 0.0) {
+    for (i = 0; i < dimension; ++i) {
+      x[i] /= norm;
+      x[i] *= alpha;
+	 }
+  }
+}
 /**@}*/
 
 /***********************************************************************************************************/
@@ -2478,39 +2596,51 @@ static size_t coco_count_numbers(const size_t *numbers, const size_t max_count, 
  */
 void coco_evaluate_function(coco_problem_t *problem, const double *x, double *y) {
   /* implements a safer version of problem->evaluate(problem, x, y) */
-	size_t i, j;
-	assert(problem != NULL);
+  size_t i, j;
+  int is_feasible;
+  double *z;
+  
+  assert(problem != NULL);
   assert(problem->evaluate_function != NULL);
-
+  
   /* Set objective vector to INFINITY if the decision vector contains any INFINITY values */
-	for (i = 0; i < coco_problem_get_dimension(problem); i++) {
-		if (coco_is_inf(x[i])) {
-			for (j = 0; j < coco_problem_get_number_of_objectives(problem); j++) {
-				y[j] = fabs(x[i]);
-			}
-	  	return;
-		}
+  for (i = 0; i < coco_problem_get_dimension(problem); i++) {
+    if (coco_is_inf(x[i])) {
+      for (j = 0; j < coco_problem_get_number_of_objectives(problem); j++) {
+        y[j] = fabs(x[i]);
+      }
+      return;
+    }
   }
-
+  
   /* Set objective vector to NAN if the decision vector contains any NAN values */
   if (coco_vector_contains_nan(x, coco_problem_get_dimension(problem))) {
-  	coco_vector_set_to_nan(y, coco_problem_get_number_of_objectives(problem));
-  	return;
+    coco_vector_set_to_nan(y, coco_problem_get_number_of_objectives(problem));
+    return;
   }
-
+  
   problem->evaluate_function(problem, x, y);
   problem->evaluations++; /* each derived class has its own counter, only the most outer will be visible */
 
   /* A little bit of bookkeeping */
   if (y[0] < problem->best_observed_fvalue[0]) {
-    problem->best_observed_fvalue[0] = y[0];
-    problem->best_observed_evaluation[0] = problem->evaluations;
+    is_feasible = 1;
+    if (coco_problem_get_number_of_constraints(problem) > 0) {
+      z = coco_allocate_vector(coco_problem_get_number_of_constraints(problem));
+      is_feasible = coco_is_feasible(problem, x, z);
+      coco_free_memory(z);
+    }
+    if (is_feasible) {
+      problem->best_observed_fvalue[0] = y[0];
+      problem->best_observed_evaluation[0] = problem->evaluations;    
+    }
   }
 
 }
 
 /**
- * @note None of the problems implement this function yet!
+ * Evaluates the problem constraint.
+ * 
  * @note Both x and y must point to correctly sized allocated memory regions.
  *
  * @param problem The given COCO problem.
@@ -2519,12 +2649,48 @@ void coco_evaluate_function(coco_problem_t *problem, const double *x, double *y)
  */
 void coco_evaluate_constraint(coco_problem_t *problem, const double *x, double *y) {
   /* implements a safer version of problem->evaluate(problem, x, y) */
+  size_t i, j;
   assert(problem != NULL);
   if (problem->evaluate_constraint == NULL) {
     coco_error("coco_evaluate_constraint(): No constraint function implemented for problem %s",
         problem->problem_id);
   }
+  
+  /* Set constraints vector to INFINITY if the decision vector contains any INFINITY values */
+  for (i = 0; i < coco_problem_get_dimension(problem); i++) {
+    if (coco_is_inf(x[i])) {
+      for (j = 0; j < coco_problem_get_number_of_constraints(problem); j++) {
+        y[j] = fabs(x[i]);
+      }
+      return;
+    }
+  }
+  
+  /* Set constraints vector to NAN if the decision vector contains any NAN values */
+  if (coco_vector_contains_nan(x, coco_problem_get_dimension(problem))) {
+    coco_vector_set_to_nan(y, coco_problem_get_number_of_constraints(problem));
+    return;
+  }
+  
   problem->evaluate_constraint(problem, x, y);
+  problem->evaluations_constraints++;
+}
+
+/**
+ * @note Both x and y must point to correctly sized allocated memory regions.
+ *
+ * @param problem The given COCO problem.
+ * @param x The decision vector.
+ * @param y The gradient of the function evaluated at the point x.
+ */
+static void bbob_evaluate_gradient(coco_problem_t *problem, const double *x, double *y) {
+  /* implements a safer version of problem->evaluate_gradient(problem, x, y) */
+  assert(problem != NULL);
+  if (problem->evaluate_gradient == NULL) {
+    coco_error("bbob_evaluate_gradient(): No gradient function implemented for problem %s",
+        problem->problem_id);
+  }
+  problem->evaluate_gradient(problem, x, y);
 }
 
 /**
@@ -2557,10 +2723,12 @@ static coco_problem_t *coco_problem_allocate(const size_t number_of_variables,
                                              const size_t number_of_constraints) {
   coco_problem_t *problem;
   problem = (coco_problem_t *) coco_allocate_memory(sizeof(*problem));
+  
   /* Initialize fields to sane/safe defaults */
   problem->initial_solution = NULL;
   problem->evaluate_function = NULL;
   problem->evaluate_constraint = NULL;
+  problem->evaluate_gradient = NULL;
   problem->recommend_solution = NULL;
   problem->problem_free_function = NULL;
   problem->number_of_variables = number_of_variables;
@@ -2569,7 +2737,10 @@ static coco_problem_t *coco_problem_allocate(const size_t number_of_variables,
   problem->smallest_values_of_interest = coco_allocate_vector(number_of_variables);
   problem->largest_values_of_interest = coco_allocate_vector(number_of_variables);
   problem->best_parameter = coco_allocate_vector(number_of_variables);
-  problem->best_value = coco_allocate_vector(number_of_objectives);
+  if (number_of_objectives > 1)
+    problem->best_value = coco_allocate_vector(number_of_objectives);
+  else
+    problem->best_value = coco_allocate_vector(1);
   if (number_of_objectives > 1)
     problem->nadir_value = coco_allocate_vector(number_of_objectives);
   else
@@ -2578,6 +2749,7 @@ static coco_problem_t *coco_problem_allocate(const size_t number_of_variables,
   problem->problem_id = NULL;
   problem->problem_type = NULL;
   problem->evaluations = 0;
+  problem->evaluations_constraints = 0;
   problem->final_target_delta[0] = 1e-8; /* in case to be modified by the benchmark */
   problem->best_observed_fvalue[0] = DBL_MAX;
   problem->best_observed_evaluation[0] = 0;
@@ -2598,7 +2770,6 @@ static coco_problem_t *coco_problem_duplicate(const coco_problem_t *other) {
   problem = coco_problem_allocate(other->number_of_variables, other->number_of_objectives,
       other->number_of_constraints);
 
-  problem->initial_solution = other->initial_solution;
   problem->evaluate_function = other->evaluate_function;
   problem->evaluate_constraint = other->evaluate_constraint;
   problem->recommend_solution = other->recommend_solution;
@@ -2610,6 +2781,9 @@ static coco_problem_t *coco_problem_duplicate(const coco_problem_t *other) {
     if (other->best_parameter)
       problem->best_parameter[i] = other->best_parameter[i];
   }
+  
+  if (other->initial_solution)
+    problem->initial_solution = coco_duplicate_vector(other->initial_solution, other->number_of_variables);
 
   if (other->best_value)
     for (i = 0; i < problem->number_of_objectives; ++i) {
@@ -2626,6 +2800,7 @@ static coco_problem_t *coco_problem_duplicate(const coco_problem_t *other) {
   problem->problem_type = coco_strdup(other->problem_type);
 
   problem->evaluations = other->evaluations;
+  problem->evaluations_constraints = other->evaluations_constraints;
   problem->final_target_delta[0] = other->final_target_delta[0];
   problem->best_observed_fvalue[0] = other->best_observed_fvalue[0];
   problem->best_observed_evaluation[0] = other->best_observed_evaluation[0];
@@ -2693,6 +2868,8 @@ void coco_problem_free(coco_problem_t *problem) {
       coco_free_memory(problem->problem_type);
     if (problem->data != NULL)
       coco_free_memory(problem->data);
+    if (problem->initial_solution != NULL)
+      coco_free_memory(problem->initial_solution);
     problem->smallest_values_of_interest = NULL;
     problem->largest_values_of_interest = NULL;
     problem->best_parameter = NULL;
@@ -2700,6 +2877,7 @@ void coco_problem_free(coco_problem_t *problem) {
     problem->nadir_value = NULL;
     problem->suite = NULL;
     problem->data = NULL;
+    problem->initial_solution = NULL;
     coco_free_memory(problem);
   }
 }
@@ -2790,22 +2968,27 @@ size_t coco_problem_get_evaluations(const coco_problem_t *problem) {
   return problem->evaluations;
 }
 
+size_t coco_problem_get_evaluations_constraints(const coco_problem_t *problem) {
+  assert(problem != NULL);
+  return problem->evaluations_constraints;
+}
+
 /**
  * @brief Returns 1 if the best parameter is not (close to) zero and 0 otherwise.
  */
 static int coco_problem_best_parameter_not_zero(const coco_problem_t *problem) {
-	size_t i = 0;
-	int best_is_zero = 1;
+  size_t i = 0;
+  int best_is_zero = 1;
 
-	if (coco_vector_contains_nan(problem->best_parameter, problem->number_of_variables))
-		return 1;
+  if (coco_vector_contains_nan(problem->best_parameter, problem->number_of_variables))
+    return 1;
 
-	while (i < problem->number_of_variables && best_is_zero) {
-	      best_is_zero = coco_double_almost_equal(problem->best_parameter[i], 0, 1e-9);
-	      i++;
-	  }
+  while (i < problem->number_of_variables && best_is_zero) {
+    best_is_zero = coco_double_almost_equal(problem->best_parameter[i], 0, 1e-9);
+    i++;
+  }
 
-	return !best_is_zero;
+  return !best_is_zero;
 }
 
 /**
@@ -2814,20 +2997,28 @@ static int coco_problem_best_parameter_not_zero(const coco_problem_t *problem) {
 int coco_problem_final_target_hit(const coco_problem_t *problem) {
   assert(problem != NULL);
   if (coco_problem_get_number_of_objectives(problem) != 1 ||
-      coco_problem_get_evaluations(problem) < 1)
+      coco_problem_get_evaluations(problem) < 1) 
     return 0;
   if (problem->best_value == NULL)
     return 0;
   return problem->best_observed_fvalue[0] <= problem->best_value[0] + problem->final_target_delta[0] ?
     1 : 0;
 }
-
 /**
  * @note Tentative...
  */
 double coco_problem_get_best_observed_fvalue1(const coco_problem_t *problem) {
   assert(problem != NULL);
   return problem->best_observed_fvalue[0];
+}
+
+/**
+ * @brief Returns the optimal function value of the problem
+ */
+double coco_problem_get_best_value(const coco_problem_t *problem) {
+  assert(problem != NULL);
+  assert(problem->best_value != NULL);
+  return problem->best_value[0];
 }
 
 /**
@@ -2880,7 +3071,6 @@ size_t coco_problem_get_dimension(const coco_problem_t *problem) {
 
 size_t coco_problem_get_number_of_objectives(const coco_problem_t *problem) {
   assert(problem != NULL);
-  assert(problem->number_of_objectives > 0);
   return problem->number_of_objectives;
 }
 
@@ -2901,18 +3091,32 @@ const double *coco_problem_get_largest_values_of_interest(const coco_problem_t *
   return problem->largest_values_of_interest;
 }
 
+const double *coco_problem_get_largest_fvalues_of_interest(const coco_problem_t *problem) {
+  assert(problem != NULL);
+  if (problem->number_of_objectives == 1)
+    coco_error("coco_problem_get_largest_fvalues_of_interest(): f-values of interest undefined for single-objective problems");
+  if (problem->nadir_value == NULL)
+    coco_error("coco_problem_get_largest_fvalues_of_interest(): f-values of interest undefined");
+  return problem->nadir_value;
+}
+
 /**
- * If a special method for setting an initial solution to the problem does not exist, the center of the
- * problem's region of interest is the initial solution.
+ * Copies problem->initial_solution into initial_solution if not null, 
+ * otherwise the center of the problem's region of interest is the 
+ * initial solution.
+ * 
  * @param problem The given COCO problem.
  * @param initial_solution The pointer to the initial solution being set by this method.
  */
 void coco_problem_get_initial_solution(const coco_problem_t *problem, double *initial_solution) {
+  
+  size_t i; 
+   
   assert(problem != NULL);
   if (problem->initial_solution != NULL) {
-    problem->initial_solution(problem, initial_solution);
+    for (i = 0; i < problem->number_of_variables; ++i)
+      initial_solution[i] = problem->initial_solution[i];
   } else {
-    size_t i;
     assert(problem->smallest_values_of_interest != NULL);
     assert(problem->largest_values_of_interest != NULL);
     for (i = 0; i < problem->number_of_variables; ++i)
@@ -2948,6 +3152,19 @@ static size_t coco_problem_get_suite_dep_instance(const coco_problem_t *problem)
   return problem->suite_dep_instance;
 }
 /**@}*/
+
+void bbob_problem_best_parameter_print(const coco_problem_t *problem) {
+  size_t i;
+  FILE *file;
+  assert(problem != NULL);
+  assert(problem->best_parameter != NULL);
+  file = fopen("._bbob_problem_best_parameter.txt", "w");
+  if (file != NULL) {
+    for (i = 0; i < problem->number_of_variables; ++i)
+      fprintf(file, " %.16f ", problem->best_parameter[i]);
+    fclose(file);
+  }
+}
 
 /***********************************************************************************************************/
 
@@ -3002,6 +3219,16 @@ static void coco_problem_transformed_evaluate_constraint(coco_problem_t *problem
   assert(data->inner_problem != NULL);
 
   coco_evaluate_constraint(data->inner_problem, x, y);
+}
+
+static void bbob_problem_transformed_evaluate_gradient(coco_problem_t *problem, const double *x, double *y) {
+  coco_problem_transformed_data_t *data;
+  assert(problem != NULL);
+  assert(problem->data != NULL);
+  data = (coco_problem_transformed_data_t *) problem->data;
+  assert(data->inner_problem != NULL);
+
+  bbob_evaluate_gradient(data->inner_problem, x, y);
 }
 
 /**
@@ -3082,6 +3309,7 @@ static coco_problem_t *coco_problem_transformed_allocate(coco_problem_t *inner_p
   inner_copy = coco_problem_duplicate(inner_problem);
   inner_copy->evaluate_function = coco_problem_transformed_evaluate_function;
   inner_copy->evaluate_constraint = coco_problem_transformed_evaluate_constraint;
+  inner_copy->evaluate_gradient = bbob_problem_transformed_evaluate_gradient;
   inner_copy->recommend_solution = coco_problem_transformed_recommend_solution;
   inner_copy->problem_free_function = coco_problem_transformed_free;
   inner_copy->data = problem;
@@ -3106,13 +3334,29 @@ static coco_problem_t *coco_problem_transformed_allocate(coco_problem_t *inner_p
 static void coco_problem_stacked_evaluate_function(coco_problem_t *problem, const double *x, double *y) {
   coco_problem_stacked_data_t* data = (coco_problem_stacked_data_t *) problem->data;
 
-  assert(
-      coco_problem_get_number_of_objectives(problem)
-          == coco_problem_get_number_of_objectives(data->problem1)
-              + coco_problem_get_number_of_objectives(data->problem2));
+  const size_t number_of_objectives_problem1 = coco_problem_get_number_of_objectives(data->problem1);
+  const size_t number_of_objectives_problem2 = coco_problem_get_number_of_objectives(data->problem2);
+  double *cons_values = NULL;
+  int is_feasible;
+    
+  assert(coco_problem_get_number_of_objectives(problem)
+      == number_of_objectives_problem1 + number_of_objectives_problem2);
+  
+  if (number_of_objectives_problem1 > 0)
+     coco_evaluate_function(data->problem1, x, &y[0]);
+  if (number_of_objectives_problem2 > 0)
+     coco_evaluate_function(data->problem2, x, &y[number_of_objectives_problem1]);
 
-  coco_evaluate_function(data->problem1, x, &y[0]);
-  coco_evaluate_function(data->problem2, x, &y[coco_problem_get_number_of_objectives(data->problem1)]);
+  /* Make sure that no feasible point has a function value lower
+   * than the minimum's.
+   */
+  if (problem->number_of_constraints > 0) {
+    cons_values = coco_allocate_vector(problem->number_of_constraints);
+    is_feasible = coco_is_feasible(problem, x, cons_values);
+    coco_free_memory(cons_values);   
+    if (is_feasible)
+      assert(y[0] + 1e-13 >= problem->best_value[0]);
+  }
 }
 
 /**
@@ -3121,15 +3365,16 @@ static void coco_problem_stacked_evaluate_function(coco_problem_t *problem, cons
 static void coco_problem_stacked_evaluate_constraint(coco_problem_t *problem, const double *x, double *y) {
   coco_problem_stacked_data_t* data = (coco_problem_stacked_data_t*) problem->data;
 
-  assert(
-      coco_problem_get_number_of_constraints(problem)
-          == coco_problem_get_number_of_constraints(data->problem1)
-              + coco_problem_get_number_of_constraints(data->problem2));
+  const size_t number_of_constraints_problem1 = coco_problem_get_number_of_constraints(data->problem1);
+  const size_t number_of_constraints_problem2 = coco_problem_get_number_of_constraints(data->problem2);
+  assert(coco_problem_get_number_of_constraints(problem)
+      == number_of_constraints_problem1 + number_of_constraints_problem2);
 
-  if (coco_problem_get_number_of_constraints(data->problem1) > 0)
+  if (number_of_constraints_problem1 > 0)
     coco_evaluate_constraint(data->problem1, x, y);
-  if (coco_problem_get_number_of_constraints(data->problem2) > 0)
-    coco_evaluate_constraint(data->problem2, x, &y[coco_problem_get_number_of_constraints(data->problem1)]);
+  if (number_of_constraints_problem2 > 0)
+    coco_evaluate_constraint(data->problem2, x, &y[number_of_constraints_problem1]);
+  
 }
 
 /* TODO: Missing coco_problem_stacked_recommend_solution function! */
@@ -3160,19 +3405,18 @@ static void coco_problem_stacked_free(coco_problem_t *problem) {
 
 /**
  * @brief Allocates a problem constructed by stacking two COCO problems.
- *
+ * 
  * This is particularly useful for generating multi-objective problems, e.g. a bi-objective problem from two
  * single-objective problems. The stacked problem must behave like a normal COCO problem accepting the same
- * input. The region of interest in the decision space is defined by parameters smallest_values_of_interest
- * and largest_values_of_interest, which are two arrays of size equal to the dimensionality of both problems.
+ * input.
  *
  * @note Regions of interest in the decision space must either agree or at least one of them must be NULL.
  * @note Best parameter becomes somewhat meaningless, but the nadir value make sense now.
  */
-static coco_problem_t *coco_problem_stacked_allocate(coco_problem_t *problem1,
-																										 coco_problem_t *problem2,
-																										 const double *smallest_values_of_interest,
-																										 const double *largest_values_of_interest) {
+static coco_problem_t *coco_problem_stacked_allocate(coco_problem_t *problem1, 
+                                                     coco_problem_t *problem2,
+                                                     const double *smallest_values_of_interest,
+                                                     const double *largest_values_of_interest) {
 
   const size_t number_of_variables = coco_problem_get_dimension(problem1);
   const size_t number_of_objectives = coco_problem_get_number_of_objectives(problem1)
@@ -3187,7 +3431,7 @@ static coco_problem_t *coco_problem_stacked_allocate(coco_problem_t *problem1,
   assert(coco_problem_get_dimension(problem1) == coco_problem_get_dimension(problem2));
 
   problem = coco_problem_allocate(number_of_variables, number_of_objectives, number_of_constraints);
-
+  
   s = coco_strconcat(coco_problem_get_id(problem1), "__");
   problem->problem_id = coco_strconcat(s, coco_problem_get_id(problem2));
   coco_free_memory(s);
@@ -3199,24 +3443,37 @@ static coco_problem_t *coco_problem_stacked_allocate(coco_problem_t *problem1,
   if (number_of_constraints > 0)
     problem->evaluate_constraint = coco_problem_stacked_evaluate_constraint;
 
-	assert(smallest_values_of_interest);
-	assert(largest_values_of_interest);
+  assert(smallest_values_of_interest);
+  assert(largest_values_of_interest);
+  
   for (i = 0; i < number_of_variables; ++i) {
     problem->smallest_values_of_interest[i] = smallest_values_of_interest[i];
     problem->largest_values_of_interest[i] = largest_values_of_interest[i];
   }
 
-	if (problem->best_parameter) /* logger_bbob doesn't work then anymore */
-		coco_free_memory(problem->best_parameter);
-	problem->best_parameter = NULL;
-
-  /* Compute the ideal and nadir values */
   assert(problem->best_value);
-  assert(problem->nadir_value);
-  problem->best_value[0] = problem1->best_value[0];
-  problem->best_value[1] = problem2->best_value[0];
-  coco_evaluate_function(problem1, problem2->best_parameter, &problem->nadir_value[0]);
-  coco_evaluate_function(problem2, problem1->best_parameter, &problem->nadir_value[1]);
+    
+  if (number_of_constraints > 0) {
+     
+    /* The best_value must be set up afterwards in suite_cons_bbob_problems.c */
+    problem->best_value[0] = -FLT_MAX;
+    
+    /* Define problem->initial_solution as problem2->initial_solution */
+    if (coco_problem_get_number_of_constraints(problem2) > 0 && problem2->initial_solution)
+      problem->initial_solution = coco_duplicate_vector(problem2->initial_solution, number_of_variables);
+      
+  }
+  else {
+     
+    /* Compute the ideal and nadir values */
+    assert(problem->nadir_value);
+    
+    problem->best_value[0] = problem1->best_value[0];
+    problem->best_value[1] = problem2->best_value[0];
+    coco_evaluate_function(problem1, problem2->best_parameter, &problem->nadir_value[0]);
+    coco_evaluate_function(problem2, problem1->best_parameter, &problem->nadir_value[1]);
+    
+  }
 
   /* setup data holder */
   data = (coco_problem_stacked_data_t *) coco_allocate_memory(sizeof(*data));
@@ -3585,24 +3842,65 @@ typedef struct {
 } transform_obj_shift_data_t;
 
 /**
- * @brief Evaluates the transformation.
+ * @brief Evaluates the transformed function.
  */
-static void transform_obj_shift_evaluate(coco_problem_t *problem, const double *x, double *y) {
+static void transform_obj_shift_evaluate_function(coco_problem_t *problem, const double *x, double *y) {
   transform_obj_shift_data_t *data;
+  double *cons_values;
+  int is_feasible;
   size_t i;
-
+  
   if (coco_vector_contains_nan(x, coco_problem_get_dimension(problem))) {
-  	coco_vector_set_to_nan(y, coco_problem_get_number_of_objectives(problem));
-  	return;
+    coco_vector_set_to_nan(y, coco_problem_get_number_of_objectives(problem));
+    return;
   }
-
+  
   data = (transform_obj_shift_data_t *) coco_problem_transformed_get_data(problem);
   coco_evaluate_function(coco_problem_transformed_get_inner_problem(problem), x, y);
-
-  for (i = 0; i < problem->number_of_objectives; i++) {
-      y[i] += data->offset;
+  
+  for (i = 0; i < problem->number_of_objectives; i++)
+    y[i] += data->offset;
+  
+  if (problem->number_of_constraints > 0) {
+    cons_values = coco_allocate_vector(problem->number_of_constraints);
+    is_feasible = coco_is_feasible(problem, x, cons_values);
+    coco_free_memory(cons_values);    
+    if (is_feasible)
+      assert(y[0] + 1e-13 >= problem->best_value[0]);
   }
-  assert(y[0] + 1e-13 >= problem->best_value[0]);
+  else assert(y[0] + 1e-13 >= problem->best_value[0]);
+}
+
+/**
+ * @brief Evaluates the transformed constraint
+ */
+static void transform_obj_shift_evaluate_constraint(coco_problem_t *problem, const double *x, double *y) {
+  transform_obj_shift_data_t *data;
+  size_t i;
+  
+  if (coco_vector_contains_nan(x, coco_problem_get_dimension(problem))) {
+    coco_vector_set_to_nan(y, coco_problem_get_number_of_constraints(problem));
+    return;
+  }
+  
+  data = (transform_obj_shift_data_t *) coco_problem_transformed_get_data(problem);
+  coco_evaluate_constraint(coco_problem_transformed_get_inner_problem(problem), x, y);
+  
+  for (i = 0; i < problem->number_of_constraints; i++)
+    y[i] += data->offset;
+}
+
+/**
+ * @brief Evaluates the gradient of the transformed function at x
+ */
+static void transform_obj_shift_evaluate_gradient(coco_problem_t *problem, const double *x, double *y) {
+
+  if (coco_vector_contains_nan(x, coco_problem_get_dimension(problem))) {
+    coco_vector_set_to_nan(y, coco_problem_get_number_of_objectives(problem));
+    return;
+  }
+  
+  bbob_evaluate_gradient(coco_problem_transformed_get_inner_problem(problem), x, y);
 }
 
 /**
@@ -3615,11 +3913,20 @@ static coco_problem_t *transform_obj_shift(coco_problem_t *inner_problem, const 
   data = (transform_obj_shift_data_t *) coco_allocate_memory(sizeof(*data));
   data->offset = offset;
 
-  problem = coco_problem_transformed_allocate(inner_problem, data, NULL, "transform_obj_shift");
-  problem->evaluate_function = transform_obj_shift_evaluate;
-  for (i = 0; i < problem->number_of_objectives; i++) {
-      problem->best_value[0] += offset;
-  }
+  problem = coco_problem_transformed_allocate(inner_problem, data, 
+    NULL, "transform_obj_shift");
+    
+  if (inner_problem->number_of_objectives > 0)
+    problem->evaluate_function = transform_obj_shift_evaluate_function;
+    
+  if (inner_problem->number_of_constraints > 0)
+    problem->evaluate_constraint = transform_obj_shift_evaluate_constraint;
+    
+  problem->evaluate_gradient = transform_obj_shift_evaluate_gradient;  /* TODO (NH): why do we need a new function pointer here? */
+  
+  for (i = 0; i < problem->number_of_objectives; i++)
+    problem->best_value[0] += offset;
+    
   return problem;
 }
 #line 15 "code-experiments/src/f_attractive_sector.c"
@@ -3630,12 +3937,17 @@ static coco_problem_t *transform_obj_shift(coco_problem_t *inner_problem, const 
  *
  * x |-> Mx + b <br>
  * The matrix M is stored in row-major format.
+ *
+ * Currently, the best parameter is transformed correctly only in the simple 
+ * cases where M is orthogonal which is always the case for the `bbob`
+ * functions. How to code this for general transformations of the above form,
+ * see https://github.com/numbbo/coco/issues/814#issuecomment-303724400
  */
 
 #include <assert.h>
 
-#line 12 "code-experiments/src/transform_vars_affine.c"
-#line 13 "code-experiments/src/transform_vars_affine.c"
+#line 17 "code-experiments/src/transform_vars_affine.c"
+#line 18 "code-experiments/src/transform_vars_affine.c"
 
 /**
  * @brief Data type for transform_vars_affine.
@@ -3645,13 +3957,15 @@ typedef struct {
 } transform_vars_affine_data_t;
 
 /**
- * @brief Evaluates the transformation.
+ * @brief Evaluates the transformed objective function.
  */
-static void transform_vars_affine_evaluate(coco_problem_t *problem, const double *x, double *y) {
+static void transform_vars_affine_evaluate_function(coco_problem_t *problem, const double *x, double *y) {
   size_t i, j;
+  double *cons_values;
+  int is_feasible;
   transform_vars_affine_data_t *data;
   coco_problem_t *inner_problem;
-
+  
   if (coco_vector_contains_nan(x, coco_problem_get_dimension(problem))) {
   	coco_vector_set_to_nan(y, coco_problem_get_number_of_objectives(problem));
   	return;
@@ -3668,8 +3982,95 @@ static void transform_vars_affine_evaluate(coco_problem_t *problem, const double
       data->x[i] += x[j] * current_row[j];
     }
   }
+  
   coco_evaluate_function(inner_problem, data->x, y);
-  assert(y[0] + 1e-13 >= problem->best_value[0]);
+  
+  if (problem->number_of_constraints > 0) {
+    cons_values = coco_allocate_vector(problem->number_of_constraints);
+    is_feasible = coco_is_feasible(problem, x, cons_values);
+    coco_free_memory(cons_values);    
+    if (is_feasible)
+      assert(y[0] + 1e-13 >= problem->best_value[0]);
+  }
+  else assert(y[0] + 1e-13 >= problem->best_value[0]);
+}
+
+/**
+ * @brief Evaluates the transformed constraint.
+ */
+static void transform_vars_affine_evaluate_constraint(coco_problem_t *problem, const double *x, double *y) {
+  size_t i, j;  
+  transform_vars_affine_data_t *data;
+  coco_problem_t *inner_problem;
+  
+  if (coco_vector_contains_nan(x, coco_problem_get_dimension(problem))) {
+  	coco_vector_set_to_nan(y, coco_problem_get_number_of_constraints(problem));
+  	return;
+  }
+
+  data = (transform_vars_affine_data_t *) coco_problem_transformed_get_data(problem);
+  inner_problem = coco_problem_transformed_get_inner_problem(problem);
+
+  for (i = 0; i < inner_problem->number_of_variables; ++i) {
+    /* data->M has problem->number_of_variables columns and inner_problem->number_of_variables rows. */
+    const double *current_row = data->M + i * problem->number_of_variables;
+    data->x[i] = data->b[i];
+    for (j = 0; j < problem->number_of_variables; ++j) {
+      data->x[i] += x[j] * current_row[j];
+    }
+  }
+  coco_evaluate_constraint(inner_problem, data->x, y);
+}
+
+/**
+ * @brief Evaluates the gradient of the transformed function.
+ */
+static void transform_vars_affine_evaluate_gradient(coco_problem_t *problem, const double *x, double *y) {
+  size_t i, j;
+  transform_vars_affine_data_t *data;
+  coco_problem_t *inner_problem;
+  double *current_row;
+  double *gradient;
+  
+  if (coco_vector_contains_nan(x, coco_problem_get_dimension(problem))) {
+  	coco_vector_set_to_nan(y, coco_problem_get_number_of_objectives(problem));
+  	return;
+  }
+  
+  data = (transform_vars_affine_data_t *) coco_problem_transformed_get_data(problem);
+  inner_problem = coco_problem_transformed_get_inner_problem(problem);
+
+  gradient = coco_allocate_vector(inner_problem->number_of_variables);
+  
+  for (i = 0; i < inner_problem->number_of_variables; ++i)
+    gradient[i] = 0.0;
+
+  for (i = 0; i < inner_problem->number_of_variables; ++i) {
+    /* data->M has problem->number_of_variables columns and inner_problem->number_of_variables rows. */
+    current_row = data->M + i * problem->number_of_variables;
+    data->x[i] = data->b[i];
+    for (j = 0; j < problem->number_of_variables; ++j) {
+      data->x[i] += x[j] * current_row[j];
+    }
+  }
+  
+  bbob_evaluate_gradient(inner_problem, data->x, y);
+  
+  /* grad_(f o g )(x), where g(x) = M * x + b, equals to
+   * M^T * grad_f(M *x + b) 
+   */
+  for (j = 0; j < inner_problem->number_of_variables; ++j) {
+    for (i = 0; i < inner_problem->number_of_variables; ++i) {
+       current_row = data->M + i * problem->number_of_variables;
+       gradient[j] += y[i] * current_row[j];
+    }
+  }
+  
+  for (i = 0; i < inner_problem->number_of_variables; ++i)
+     y[i] = gradient[i];
+  
+  current_row = NULL;
+  coco_free_memory(gradient);
 }
 
 /**
@@ -3690,11 +4091,12 @@ static coco_problem_t *transform_vars_affine(coco_problem_t *inner_problem,
                                              const double *b,
                                              const size_t number_of_variables) {
   /*
-   * TODO:
+   * TODOs:
    * - Calculate new smallest/largest values of interest?
    * - Resize bounds vectors if input and output dimensions do not match
    */
 
+  size_t i, j;
   coco_problem_t *problem;
   transform_vars_affine_data_t *data;
   size_t entries_in_M;
@@ -3704,12 +4106,32 @@ static coco_problem_t *transform_vars_affine(coco_problem_t *inner_problem,
   data->M = coco_duplicate_vector(M, entries_in_M);
   data->b = coco_duplicate_vector(b, inner_problem->number_of_variables);
   data->x = coco_allocate_vector(inner_problem->number_of_variables);
-  problem = coco_problem_transformed_allocate(inner_problem, data, transform_vars_affine_free, "transform_vars_affine");
-  problem->evaluate_function = transform_vars_affine_evaluate;
-  if (coco_problem_best_parameter_not_zero(inner_problem)) {
-    coco_debug("transform_vars_affine(): 'best_parameter' not updated, set to NAN");
-    coco_vector_set_to_nan(inner_problem->best_parameter, inner_problem->number_of_variables);
+
+  problem = coco_problem_transformed_allocate(inner_problem, data, 
+    transform_vars_affine_free, "transform_vars_affine");
+    
+  if (inner_problem->number_of_objectives > 0)
+    problem->evaluate_function = transform_vars_affine_evaluate_function;
+    
+  if (inner_problem->number_of_constraints > 0)
+    problem->evaluate_constraint = transform_vars_affine_evaluate_constraint;
+    
+  problem->evaluate_gradient = transform_vars_affine_evaluate_gradient;
+
+  /* Update the best parameter by computing
+     problem->best_parameter = M^T * (inner_problem->best_parameter - b)
+  */
+  for (i = 0; i < inner_problem->number_of_variables; ++i) {
+    data->x[i] = inner_problem->best_parameter[i] - data->b[i];
   }
+  for (i = 0; i < problem->number_of_variables; ++i) {
+    problem->best_parameter[i] = 0;
+    for (j = 0; j < inner_problem->number_of_variables; ++j) {
+      problem->best_parameter[i] += data->M[j * problem->number_of_variables + i] * data->x[j];
+    }
+  }
+  
+
   return problem;
 }
 #line 16 "code-experiments/src/f_attractive_sector.c"
@@ -3734,13 +4156,15 @@ typedef struct {
 } transform_vars_shift_data_t;
 
 /**
- * @brief Evaluates the transformation.
+ * @brief Evaluates the transformed objective function.
  */
-static void transform_vars_shift_evaluate(coco_problem_t *problem, const double *x, double *y) {
+static void transform_vars_shift_evaluate_function(coco_problem_t *problem, const double *x, double *y) {
   size_t i;
+  double *cons_values;
+  int is_feasible;
   transform_vars_shift_data_t *data;
   coco_problem_t *inner_problem;
-
+  
   if (coco_vector_contains_nan(x, coco_problem_get_dimension(problem))) {
   	coco_vector_set_to_nan(y, coco_problem_get_number_of_objectives(problem));
   	return;
@@ -3752,8 +4176,62 @@ static void transform_vars_shift_evaluate(coco_problem_t *problem, const double 
   for (i = 0; i < problem->number_of_variables; ++i) {
     data->shifted_x[i] = x[i] - data->offset[i];
   }
+  
   coco_evaluate_function(inner_problem, data->shifted_x, y);
-  assert(y[0] + 1e-13 >= problem->best_value[0]);
+  
+  if (problem->number_of_constraints > 0) {
+    cons_values = coco_allocate_vector(problem->number_of_constraints);
+    is_feasible = coco_is_feasible(problem, x, cons_values);
+    coco_free_memory(cons_values);    
+    if (is_feasible)
+      assert(y[0] + 1e-13 >= problem->best_value[0]);
+  }
+  else assert(y[0] + 1e-13 >= problem->best_value[0]);
+}
+
+/**
+ * @brief Evaluates the transformed constraint function.
+ */
+static void transform_vars_shift_evaluate_constraint(coco_problem_t *problem, const double *x, double *y) {
+  size_t i;
+  transform_vars_shift_data_t *data;
+  coco_problem_t *inner_problem;
+  
+  if (coco_vector_contains_nan(x, coco_problem_get_dimension(problem))) {
+  	coco_vector_set_to_nan(y, coco_problem_get_number_of_objectives(problem));
+  	return;
+  }
+
+  data = (transform_vars_shift_data_t *) coco_problem_transformed_get_data(problem);
+  inner_problem = coco_problem_transformed_get_inner_problem(problem);
+
+  for (i = 0; i < problem->number_of_variables; ++i) {
+    data->shifted_x[i] = x[i] - data->offset[i];
+  }
+  coco_evaluate_constraint(inner_problem, data->shifted_x, y);
+}
+
+/**
+ * @brief Evaluates the gradient of the transformed function at x
+ */
+static void transform_vars_shift_evaluate_gradient(coco_problem_t *problem, const double *x, double *y) {
+  size_t i;
+  transform_vars_shift_data_t *data;
+  coco_problem_t *inner_problem;
+  
+  if (coco_vector_contains_nan(x, coco_problem_get_dimension(problem))) {
+  	coco_vector_set_to_nan(y, coco_problem_get_number_of_objectives(problem));
+  	return;
+  }
+
+  data = (transform_vars_shift_data_t *) coco_problem_transformed_get_data(problem);
+  inner_problem = coco_problem_transformed_get_inner_problem(problem);
+		  
+  for (i = 0; i < problem->number_of_variables; ++i) {
+    data->shifted_x[i] = x[i] - data->offset[i];
+  }
+  bbob_evaluate_gradient(inner_problem, data->shifted_x, y);
+
 }
 
 /**
@@ -3781,12 +4259,26 @@ static coco_problem_t *transform_vars_shift(coco_problem_t *inner_problem,
   data->offset = coco_duplicate_vector(offset, inner_problem->number_of_variables);
   data->shifted_x = coco_allocate_vector(inner_problem->number_of_variables);
 
-  problem = coco_problem_transformed_allocate(inner_problem, data, transform_vars_shift_free, "transform_vars_shift");
-  problem->evaluate_function = transform_vars_shift_evaluate;
-  /* Compute best parameter */
-  for (i = 0; i < problem->number_of_variables; i++) {
-      problem->best_parameter[i] += data->offset[i];
-  }
+  problem = coco_problem_transformed_allocate(inner_problem, data, 
+    transform_vars_shift_free, "transform_vars_shift");
+    
+  if (inner_problem->number_of_objectives > 0)
+    problem->evaluate_function = transform_vars_shift_evaluate_function;
+    
+  if (inner_problem->number_of_constraints > 0)
+    problem->evaluate_constraint = transform_vars_shift_evaluate_constraint;
+    
+  problem->evaluate_gradient = transform_vars_shift_evaluate_gradient;
+  
+  /* Update the best parameter */
+  for (i = 0; i < problem->number_of_variables; i++)
+    problem->best_parameter[i] += data->offset[i];
+    
+  /* Update the initial solution if any */
+  if (problem->initial_solution)
+    for (i = 0; i < problem->number_of_variables; i++)
+      problem->initial_solution[i] += data->offset[i];
+      
   return problem;
 }
 #line 17 "code-experiments/src/f_attractive_sector.c"
@@ -3951,14 +4443,17 @@ typedef struct {
 } transform_vars_asymmetric_data_t;
 
 /**
- * @brief Evaluates the transformation.
+ * @brief Evaluates the transformed function.
  */
-static void transform_vars_asymmetric_evaluate(coco_problem_t *problem, const double *x, double *y) {
+static void transform_vars_asymmetric_evaluate_function(coco_problem_t *problem, 
+                                                        const double *x, 
+                                                        double *y) {
   size_t i;
-  double exponent;
+  double exponent, *cons_values;
+  int is_feasible;
   transform_vars_asymmetric_data_t *data;
   coco_problem_t *inner_problem;
-
+  
   if (coco_vector_contains_nan(x, coco_problem_get_dimension(problem))) {
   	coco_vector_set_to_nan(y, coco_problem_get_number_of_objectives(problem));
   	return;
@@ -3970,14 +4465,54 @@ static void transform_vars_asymmetric_evaluate(coco_problem_t *problem, const do
   for (i = 0; i < problem->number_of_variables; ++i) {
     if (x[i] > 0.0) {
       exponent = 1.0
-          + (data->beta * (double) (long) i) / ((double) (long) problem->number_of_variables - 1.0) * sqrt(x[i]);
+          + ((data->beta * (double) (long) i) / ((double) (long) problem->number_of_variables - 1.0)) * sqrt(x[i]);
       data->x[i] = pow(x[i], exponent);
     } else {
       data->x[i] = x[i];
     }
   }
+  
   coco_evaluate_function(inner_problem, data->x, y);
-  assert(y[0] + 1e-13 >= problem->best_value[0]);
+  
+  if (problem->number_of_constraints > 0) {
+    cons_values = coco_allocate_vector(problem->number_of_constraints);
+    is_feasible = coco_is_feasible(problem, x, cons_values);
+    coco_free_memory(cons_values);    
+    if (is_feasible)
+      assert(y[0] + 1e-13 >= problem->best_value[0]);
+  }
+  else assert(y[0] + 1e-13 >= problem->best_value[0]);
+}
+
+/**
+ * @brief Evaluates the transformed constraint.
+ */
+static void transform_vars_asymmetric_evaluate_constraint(coco_problem_t *problem, 
+                                                          const double *x, 
+                                                          double *y) {
+  size_t i;
+  double exponent;
+  transform_vars_asymmetric_data_t *data;
+  coco_problem_t *inner_problem;
+  
+  if (coco_vector_contains_nan(x, coco_problem_get_dimension(problem))) {
+  	coco_vector_set_to_nan(y, coco_problem_get_number_of_constraints(problem));
+  	return;
+  }
+
+  data = (transform_vars_asymmetric_data_t *) coco_problem_transformed_get_data(problem);
+  inner_problem = coco_problem_transformed_get_inner_problem(problem);
+
+  for (i = 0; i < problem->number_of_variables; ++i) {
+    if (x[i] > 0.0) {
+      exponent = 1.0
+          + ((data->beta * (double) (long) i) / ((double) (long) problem->number_of_variables - 1.0)) * sqrt(x[i]);
+      data->x[i] = pow(x[i], exponent);
+    } else {
+      data->x[i] = x[i];
+    }
+  }
+  coco_evaluate_constraint(inner_problem, data->x, y);
 }
 
 static void transform_vars_asymmetric_free(void *thing) {
@@ -3989,15 +4524,45 @@ static void transform_vars_asymmetric_free(void *thing) {
  * @brief Creates the transformation.
  */
 static coco_problem_t *transform_vars_asymmetric(coco_problem_t *inner_problem, const double beta) {
+  
+  size_t i;
+  int is_feasible;
+  double alpha, *cons_values;
   transform_vars_asymmetric_data_t *data;
   coco_problem_t *problem;
-
+  
   data = (transform_vars_asymmetric_data_t *) coco_allocate_memory(sizeof(*data));
   data->x = coco_allocate_vector(inner_problem->number_of_variables);
   data->beta = beta;
-  problem = coco_problem_transformed_allocate(inner_problem, data, transform_vars_asymmetric_free, "transform_vars_asymmetric");
-  problem->evaluate_function = transform_vars_asymmetric_evaluate;
-  if (coco_problem_best_parameter_not_zero(inner_problem)) {
+  problem = coco_problem_transformed_allocate(inner_problem, data, 
+    transform_vars_asymmetric_free, "transform_vars_asymmetric");
+    
+  if (inner_problem->number_of_objectives > 0)
+    problem->evaluate_function = transform_vars_asymmetric_evaluate_function;
+    
+  if (inner_problem->number_of_constraints > 0) {
+	  
+    problem->evaluate_constraint = transform_vars_asymmetric_evaluate_constraint;
+    
+    /* Check if the initial solution remains feasible after
+     * the transformation. If not, do a backtracking
+     * towards the origin until it becomes feasible.
+     */
+    if (inner_problem->initial_solution) {
+      cons_values = coco_allocate_vector(problem->number_of_constraints);
+      is_feasible = coco_is_feasible(problem, inner_problem->initial_solution, cons_values);
+      alpha = 0.9;
+      i = 0;
+      while (!is_feasible) {
+        problem->initial_solution[i] *= alpha;
+        is_feasible = coco_is_feasible(problem, problem->initial_solution, cons_values);
+        i = (i + 1) % inner_problem->number_of_variables;
+      }
+      coco_free_memory(cons_values);
+    }
+  }
+  
+  if (inner_problem->number_of_objectives > 0 && coco_problem_best_parameter_not_zero(inner_problem)) {
     coco_warning("transform_vars_asymmetric(): 'best_parameter' not updated, set to NAN");
     coco_vector_set_to_nan(inner_problem->best_parameter, inner_problem->number_of_variables);
   }
@@ -4014,9 +4579,9 @@ static double f_bent_cigar_raw(const double *x, const size_t number_of_variables
   static const double condition = 1.0e6;
   size_t i;
   double result;
-
+  
   if (coco_vector_contains_nan(x, number_of_variables))
-  	return NAN;
+    return NAN;
 
   result = x[0] * x[0];
   for (i = 1; i < number_of_variables; ++i) {
@@ -4032,6 +4597,21 @@ static void f_bent_cigar_evaluate(coco_problem_t *problem, const double *x, doub
   assert(problem->number_of_objectives == 1);
   y[0] = f_bent_cigar_raw(x, problem->number_of_variables);
   assert(y[0] + 1e-13 >= problem->best_value[0]);
+  
+}
+
+/**
+ * @brief Evaluates the gradient of the bent cigar function.
+ */
+static void f_bent_cigar_evaluate_gradient(coco_problem_t *problem, const double *x, double *y) {
+
+  static const double condition = 1.0e6;
+  size_t i;
+
+  y[0] = 2.0 * x[0];
+  for (i = 1; i < problem->number_of_variables; ++i)
+    y[i] = 2.0 * condition * x[i];
+
 }
 
 /**
@@ -4041,6 +4621,7 @@ static coco_problem_t *f_bent_cigar_allocate(const size_t number_of_variables) {
 
   coco_problem_t *problem = coco_problem_allocate_from_scalars("bent cigar function",
       f_bent_cigar_evaluate, NULL, number_of_variables, -5.0, 5.0, 0.0);
+  problem->evaluate_gradient = f_bent_cigar_evaluate_gradient;
   coco_problem_set_id(problem, "%s_d%02lu", "bent_cigar", number_of_variables);
 
   /* Compute best solution */
@@ -4081,6 +4662,47 @@ static coco_problem_t *f_bent_cigar_bbob_problem_allocate(const size_t function,
   problem = transform_vars_affine(problem, M, b, dimension);
   problem = transform_vars_shift(problem, xopt, 0);
 
+  coco_problem_set_id(problem, problem_id_template, function, instance, dimension);
+  coco_problem_set_name(problem, problem_name_template, function, instance, dimension);
+  coco_problem_set_type(problem, "3-ill-conditioned");
+
+  coco_free_memory(M);
+  coco_free_memory(b);
+  coco_free_memory(xopt);
+  return problem;
+}
+
+/**
+ * @brief Creates the bent cigar problem for the constrained BBOB suite.
+ */
+static coco_problem_t *f_bent_cigar_cons_bbob_problem_allocate(const size_t function,
+                                                          const size_t dimension,
+                                                          const size_t instance,
+                                                          const long rseed,
+                                                          const char *problem_id_template,
+                                                          const char *problem_name_template) {
+
+  double *xopt, fopt;
+  coco_problem_t *problem = NULL;
+
+  double *M = coco_allocate_vector(dimension * dimension);
+  double *b = coco_allocate_vector(dimension);
+  double **rot1;
+
+  xopt = coco_allocate_vector(dimension);
+  fopt = bbob2009_compute_fopt(function, instance);
+  bbob2009_compute_xopt(xopt, rseed + 1000000, dimension);
+
+  rot1 = bbob2009_allocate_matrix(dimension, dimension);
+  bbob2009_compute_rotation(rot1, rseed + 1000000, dimension);
+  bbob2009_copy_rotation_matrix(rot1, M, b, dimension);
+  bbob2009_free_matrix(rot1, dimension);
+
+  problem = f_bent_cigar_allocate(dimension);
+  problem = transform_obj_shift(problem, fopt);
+  problem = transform_vars_affine(problem, M, b, dimension);
+  problem = transform_vars_shift(problem, xopt, 0);
+  
   coco_problem_set_id(problem, problem_id_template, function, instance, dimension);
   coco_problem_set_name(problem, problem_name_template, function, instance, dimension);
   coco_problem_set_type(problem, "3-ill-conditioned");
@@ -4205,15 +4827,16 @@ typedef struct {
 } transform_vars_oscillate_data_t;
 
 /**
- * @brief Evaluates the transformation.
+ * @brief Evaluates the transformed objective functions.
  */
-static void transform_vars_oscillate_evaluate(coco_problem_t *problem, const double *x, double *y) {
+static void transform_vars_oscillate_evaluate_function(coco_problem_t *problem, const double *x, double *y) {
   static const double alpha = 0.1;
-  double tmp, base, *oscillated_x;
+  double tmp, base, *oscillated_x, *cons_values;
+  int is_feasible;
   size_t i;
   transform_vars_oscillate_data_t *data;
   coco_problem_t *inner_problem;
-
+  
   if (coco_vector_contains_nan(x, coco_problem_get_dimension(problem))) {
   	coco_vector_set_to_nan(y, coco_problem_get_number_of_objectives(problem));
   	return;
@@ -4237,7 +4860,50 @@ static void transform_vars_oscillate_evaluate(coco_problem_t *problem, const dou
     }
   }
   coco_evaluate_function(inner_problem, oscillated_x, y);
-  assert(y[0] + 1e-13 >= problem->best_value[0]);
+  
+  if (problem->number_of_constraints > 0) {
+    cons_values = coco_allocate_vector(problem->number_of_constraints);
+    is_feasible = coco_is_feasible(problem, x, cons_values);
+    coco_free_memory(cons_values);    
+    if (is_feasible)
+      assert(y[0] + 1e-13 >= problem->best_value[0]);
+  }
+  else assert(y[0] + 1e-13 >= problem->best_value[0]);
+}
+
+/**
+ * @brief Evaluates the transformed constraints.
+ */
+static void transform_vars_oscillate_evaluate_constraint(coco_problem_t *problem, const double *x, double *y) {
+  static const double alpha = 0.1;
+  double tmp, base, *oscillated_x;
+  size_t i;
+  transform_vars_oscillate_data_t *data;
+  coco_problem_t *inner_problem;
+  
+  if (coco_vector_contains_nan(x, coco_problem_get_dimension(problem))) {
+  	coco_vector_set_to_nan(y, coco_problem_get_number_of_constraints(problem));
+  	return;
+  }
+
+  data = (transform_vars_oscillate_data_t *) coco_problem_transformed_get_data(problem);
+  oscillated_x = data->oscillated_x; /* short cut to make code more readable */
+  inner_problem = coco_problem_transformed_get_inner_problem(problem);
+
+  for (i = 0; i < problem->number_of_variables; ++i) {
+    if (x[i] > 0.0) {
+      tmp = log(x[i]) / alpha;
+      base = exp(tmp + 0.49 * (sin(tmp) + sin(0.79 * tmp)));
+      oscillated_x[i] = pow(base, alpha);
+    } else if (x[i] < 0.0) {
+      tmp = log(-x[i]) / alpha;
+      base = exp(tmp + 0.49 * (sin(0.55 * tmp) + sin(0.31 * tmp)));
+      oscillated_x[i] = -pow(base, alpha);
+    } else {
+      oscillated_x[i] = 0.0;
+    }
+  }
+  coco_evaluate_constraint(inner_problem, oscillated_x, y);
 }
 
 /**
@@ -4252,13 +4918,41 @@ static void transform_vars_oscillate_free(void *thing) {
  * @brief Creates the transformation.
  */
 static coco_problem_t *transform_vars_oscillate(coco_problem_t *inner_problem) {
+	
+  size_t i;
+  int is_feasible;
+  double alpha, *cons_values;
   transform_vars_oscillate_data_t *data;
   coco_problem_t *problem;
   data = (transform_vars_oscillate_data_t *) coco_allocate_memory(sizeof(*data));
   data->oscillated_x = coco_allocate_vector(inner_problem->number_of_variables);
 
-  problem = coco_problem_transformed_allocate(inner_problem, data, transform_vars_oscillate_free, "transform_vars_oscillate");
-  problem->evaluate_function = transform_vars_oscillate_evaluate;
+  problem = coco_problem_transformed_allocate(inner_problem, data, 
+    transform_vars_oscillate_free, "transform_vars_oscillate");
+    
+  if (inner_problem->number_of_objectives > 0)
+    problem->evaluate_function = transform_vars_oscillate_evaluate_function;
+    
+  if (inner_problem->number_of_constraints > 0) {
+    problem->evaluate_constraint = transform_vars_oscillate_evaluate_constraint;
+    
+    /* Check if the initial solution remains feasible after
+     * the transformation. If not, do a backtracking
+     * towards the origin until it becomes feasible.
+     */
+    if (inner_problem->initial_solution) {
+      cons_values = coco_allocate_vector(problem->number_of_constraints);
+      is_feasible = coco_is_feasible(problem, inner_problem->initial_solution, cons_values);
+      alpha = 0.9;
+      i = 0;
+      while (!is_feasible) {
+        problem->initial_solution[i] *= alpha;
+        is_feasible = coco_is_feasible(problem, problem->initial_solution, cons_values);
+        i = (i + 1) % inner_problem->number_of_variables;
+      }
+      coco_free_memory(cons_values);
+    }
+  }
   return problem;
 }
 #line 14 "code-experiments/src/f_bueche_rastrigin.c"
@@ -4441,10 +5135,10 @@ static double f_different_powers_raw(const double *x, const size_t number_of_var
   size_t i;
   double sum = 0.0;
   double result;
-
+  
   if (coco_vector_contains_nan(x, number_of_variables))
-  	return NAN;
-
+    return NAN;
+    
   for (i = 0; i < number_of_variables; ++i) {
     double exponent = 2.0 + (4.0 * (double) (long) i) / ((double) (long) number_of_variables - 1.0);
     sum += pow(fabs(x[i]), exponent);
@@ -4464,12 +5158,46 @@ static void f_different_powers_evaluate(coco_problem_t *problem, const double *x
 }
 
 /**
+ * @brief Implements the sign function.
+ */
+double sign(double x) {
+  
+  if (x > 0) return 1;
+  if (x < 0) return -1;
+  return 0;
+}
+
+/**
+ * @brief Evaluates the gradient of the function "different powers".
+ */
+static void f_different_powers_evaluate_gradient(coco_problem_t *problem, const double *x, double *y) {
+
+  size_t i;
+  double sum = 0.0;
+  double aux;
+
+  for (i = 0; i < problem->number_of_variables; ++i) {
+    aux = 2.0 + (4.0 * (double) (long) i) / ((double) (long) problem->number_of_variables - 1.0);
+    sum += pow(fabs(x[i]), aux);
+  }
+  
+  for (i = 0; i < problem->number_of_variables; ++i) {
+    aux = 2.0 + (4.0 * (double) (long) i) / ((double) (long) problem->number_of_variables - 1.0);
+	 y[i] = 0.5 * (aux)/(sum);
+    aux -= 1.0;
+    y[i] *= pow(fabs(x[i]), aux) * sign(x[i]);
+  }
+  
+}
+
+/**
  * @brief Allocates the basic different powers problem.
  */
 static coco_problem_t *f_different_powers_allocate(const size_t number_of_variables) {
 
   coco_problem_t *problem = coco_problem_allocate_from_scalars("different powers function",
       f_different_powers_evaluate, NULL, number_of_variables, -5.0, 5.0, 0.0);
+  problem->evaluate_gradient = f_different_powers_evaluate_gradient;
   coco_problem_set_id(problem, "%s_d%02lu", "different_powers", number_of_variables);
 
   /* Compute best solution */
@@ -4542,10 +5270,10 @@ static double f_discus_raw(const double *x, const size_t number_of_variables) {
   static const double condition = 1.0e6;
   size_t i;
   double result;
-
+  
   if (coco_vector_contains_nan(x, number_of_variables))
-  	return NAN;
-
+    return NAN;
+    
   result = condition * x[0] * x[0];
   for (i = 1; i < number_of_variables; ++i) {
     result += x[i] * x[i];
@@ -4564,12 +5292,29 @@ static void f_discus_evaluate(coco_problem_t *problem, const double *x, double *
 }
 
 /**
+ * @brief Evaluates the gradient of the discus function.
+ */
+static void f_discus_evaluate_gradient(coco_problem_t *problem, 
+                                       const double *x, 
+                                       double *y) {
+
+  static const double condition = 1.0e6;
+  size_t i;
+
+  y[0] = condition * 2.0 * x[0];
+  for (i = 1; i < problem->number_of_variables; ++i)
+    y[i] = 2.0 * x[i];
+
+}
+
+/**
  * @brief Allocates the basic discus problem.
  */
 static coco_problem_t *f_discus_allocate(const size_t number_of_variables) {
 
   coco_problem_t *problem = coco_problem_allocate_from_scalars("discus function",
       f_discus_evaluate, NULL, number_of_variables, -5.0, 5.0, 0.0);
+  problem->evaluate_gradient = f_discus_evaluate_gradient;
   coco_problem_set_id(problem, "%s_d%02lu", "discus", number_of_variables);
 
   /* Compute best solution */
@@ -4605,6 +5350,47 @@ static coco_problem_t *f_discus_bbob_problem_allocate(const size_t function,
 
   problem = f_discus_allocate(dimension);
   problem = transform_vars_oscillate(problem);
+  problem = transform_vars_affine(problem, M, b, dimension);
+  problem = transform_vars_shift(problem, xopt, 0);
+  problem = transform_obj_shift(problem, fopt);
+
+  coco_problem_set_id(problem, problem_id_template, function, instance, dimension);
+  coco_problem_set_name(problem, problem_name_template, function, instance, dimension);
+  coco_problem_set_type(problem, "3-ill-conditioned");
+
+  coco_free_memory(M);
+  coco_free_memory(b);
+  coco_free_memory(xopt);
+  return problem;
+}
+
+/**
+ * @brief Creates the discus problem for the constrained BBOB suite.
+ */
+static coco_problem_t *f_discus_cons_bbob_problem_allocate(const size_t function,
+                                                      const size_t dimension,
+                                                      const size_t instance,
+                                                      const long rseed,
+                                                      const char *problem_id_template,
+                                                      const char *problem_name_template) {
+
+  double *xopt, fopt;
+  coco_problem_t *problem = NULL;
+
+  double *M = coco_allocate_vector(dimension * dimension);
+  double *b = coco_allocate_vector(dimension);
+  double **rot1;
+
+  xopt = coco_allocate_vector(dimension);
+  fopt = bbob2009_compute_fopt(function, instance);
+  bbob2009_compute_xopt(xopt, rseed, dimension);
+
+  rot1 = bbob2009_allocate_matrix(dimension, dimension);
+  bbob2009_compute_rotation(rot1, rseed + 1000000, dimension);
+  bbob2009_copy_rotation_matrix(rot1, M, b, dimension);
+  bbob2009_free_matrix(rot1, dimension);
+
+  problem = f_discus_allocate(dimension);
   problem = transform_vars_affine(problem, M, b, dimension);
   problem = transform_vars_shift(problem, xopt, 0);
   problem = transform_obj_shift(problem, fopt);
@@ -4672,17 +5458,17 @@ static double **ls_allocate_blockmatrix(const size_t n, const size_t* block_size
   size_t idx_blocksize;
   size_t i;
   size_t sum_block_sizes;
-
+  
   sum_block_sizes = 0;
   for (i = 0; i < nb_blocks; i++){
     sum_block_sizes += block_sizes[i];
   }
   assert(sum_block_sizes == n);
-
+  
   matrix = (double **) coco_allocate_memory(sizeof(double *) * n);
   idx_blocksize = 0;
   next_bs_change = block_sizes[idx_blocksize];
-
+  
   for (i = 0; i < n; ++i) {
     if (i >= next_bs_change) {
       idx_blocksize++;
@@ -4690,7 +5476,7 @@ static double **ls_allocate_blockmatrix(const size_t n, const size_t* block_size
     }
     current_blocksize=block_sizes[idx_blocksize];
     matrix[i] = coco_allocate_vector(current_blocksize);
-
+    
   }
   return matrix;
 }
@@ -4726,7 +5512,7 @@ static void ls_compute_blockrotation(double **B, long seed, size_t n, size_t *bl
   size_t idx_block, current_blocksize,cumsum_prev_block_sizes, sum_block_sizes;
   size_t nb_entries;
   coco_random_state_t *rng = coco_random_new((uint32_t) seed);
-
+  
   nb_entries = 0;
   sum_block_sizes = 0;
   for (i = 0; i < nb_blocks; i++){
@@ -4734,7 +5520,7 @@ static void ls_compute_blockrotation(double **B, long seed, size_t n, size_t *bl
     nb_entries += block_sizes[i] * block_sizes[i];
   }
   assert(sum_block_sizes == n);
-
+  
   cumsum_prev_block_sizes = 0;/* shift in rows to account for the previous blocks */
   for (idx_block = 0; idx_block < nb_blocks; idx_block++) {
     current_blocksize = block_sizes[idx_block];
@@ -4744,7 +5530,7 @@ static void ls_compute_blockrotation(double **B, long seed, size_t n, size_t *bl
         current_block[i][j] = coco_random_normal(rng);
       }
     }
-
+    
     for (i = 0; i < current_blocksize; i++) {
       for (j = 0; j < i; j++) {
         prod = 0;
@@ -4763,14 +5549,14 @@ static void ls_compute_blockrotation(double **B, long seed, size_t n, size_t *bl
         current_block[k][i] /= sqrt(prod);
       }
     }
-
+    
     /* now fill the block matrix*/
     for (i = 0 ; i < current_blocksize; i++) {
       for (j = 0; j < current_blocksize; j++) {
         B[i + cumsum_prev_block_sizes][j]=current_block[i][j];
       }
     }
-
+    
     cumsum_prev_block_sizes+=current_blocksize;
     /*current_gvect_pos += current_blocksize * current_blocksize;*/
     ls_free_block_matrix(current_block, current_blocksize);
@@ -4785,7 +5571,7 @@ static void ls_compute_blockrotation(double **B, long seed, size_t n, size_t *bl
 static double **ls_copy_block_matrix(const double *const *B, const size_t dimension, const size_t *block_sizes, const size_t nb_blocks) {
   double **dest;
   size_t i, j, idx_blocksize, current_blocksize, next_bs_change;
-
+  
   dest = ls_allocate_blockmatrix(dimension, block_sizes, nb_blocks);
   idx_blocksize = 0;
   current_blocksize = block_sizes[idx_blocksize];
@@ -4822,7 +5608,7 @@ static int f_compare_doubles_for_random_permutation(const void *a, const void *b
  * generates a random, uniformly sampled, permutation and puts it in P
  */
 static void ls_compute_random_permutation(size_t *P, long seed, size_t n) {
-  long i;
+  unsigned long i;
   coco_random_state_t *rng = coco_random_new((uint32_t) seed);
   ls_random_data = coco_allocate_vector(n);
   for (i = 0; i < n; i++){
@@ -4852,7 +5638,7 @@ long ls_rand_int(long lower_bound, long upper_bound, coco_random_state_t *rng){
  * if swap_range is the largest possible size_t value ( (size_t) -1 ), a random uniform permutation is generated
  */
 static void ls_compute_truncated_uniform_swap_permutation(size_t *P, long seed, size_t n, size_t nb_swaps, size_t swap_range) {
-  long i, idx_swap;
+  unsigned long i, idx_swap;
   size_t lower_bound, upper_bound, first_swap_var, second_swap_var, tmp;
   size_t *idx_order;
   coco_random_state_t *rng = coco_random_new((uint32_t) seed);
@@ -4864,7 +5650,7 @@ static void ls_compute_truncated_uniform_swap_permutation(size_t *P, long seed, 
     idx_order[i] = (size_t) i;
     ls_random_data[i] = coco_random_uniform(rng);
   }
-
+  
   if (swap_range > 0) {
     /*sort the random data in random_data and arange idx_order accordingly*/
     /*did not use ls_compute_random_permutation to only use the seed once*/
@@ -4898,7 +5684,7 @@ static void ls_compute_truncated_uniform_swap_permutation(size_t *P, long seed, 
       /* generate random permutation instead */
       ls_compute_random_permutation(P, seed, n);
     }
-
+    
   }
   coco_random_free(rng);
 }
@@ -4911,10 +5697,10 @@ static void ls_compute_truncated_uniform_swap_permutation(size_t *P, long seed, 
 size_t *coco_duplicate_size_t_vector(const size_t *src, const size_t number_of_elements) {
   size_t i;
   size_t *dst;
-
+  
   assert(src != NULL);
   assert(number_of_elements > 0);
-
+  
   dst = coco_allocate_vector_size_t(number_of_elements);
   for (i = 0; i < number_of_elements; ++i) {
     dst[i] = src[i];
@@ -4930,8 +5716,8 @@ size_t *coco_duplicate_size_t_vector(const size_t *src, const size_t number_of_e
 size_t *ls_get_block_sizes(size_t *nb_blocks, size_t dimension){
   size_t *block_sizes;
   size_t block_size;
-  int i;
-
+  size_t i;
+  
   block_size = coco_double_to_size_t(bbob2009_fmin((double)dimension / 4, 100));
   *nb_blocks = dimension / block_size + ((dimension % block_size) > 0);
   block_sizes = coco_allocate_vector_size_t(*nb_blocks);
@@ -4983,7 +5769,7 @@ static void transform_vars_permblockdiag_evaluate(coco_problem_t *problem, const
   size_t i, j, current_blocksize, first_non_zero_ind;
   transform_vars_permblockdiag_t *data;
   coco_problem_t *inner_problem;
-
+  
   if (coco_vector_contains_nan(x, coco_problem_get_dimension(problem))) {
   	coco_vector_set_to_nan(y, coco_problem_get_number_of_objectives(problem));
   	return;
@@ -4991,7 +5777,7 @@ static void transform_vars_permblockdiag_evaluate(coco_problem_t *problem, const
 
   data = (transform_vars_permblockdiag_t *) coco_problem_transformed_get_data(problem);
   inner_problem = coco_problem_transformed_get_inner_problem(problem);
-
+  
   for (i = 0; i < inner_problem->number_of_variables; ++i) {
     current_blocksize = data->block_size_map[data->P2[i]];/*the block_size is that of the permuted line*/
     first_non_zero_ind = data->first_non_zero_map[data->P2[i]];
@@ -5002,9 +5788,9 @@ static void transform_vars_permblockdiag_evaluate(coco_problem_t *problem, const
     }
     if (data->x[i] > 100 || data->x[i] < -100 || 1) {
     }
-
+    
   }
-
+  
   coco_evaluate_function(inner_problem, data->x, y);
   assert(y[0] + 1e-13 >= problem->best_value[0]);
 }
@@ -5050,7 +5836,7 @@ static coco_problem_t *transform_vars_permblockdiag(coco_problem_t *inner_proble
   data->nb_blocks = nb_blocks;
   data->block_size_map = coco_allocate_vector_size_t(number_of_variables);
   data->first_non_zero_map = coco_allocate_vector_size_t(number_of_variables);
-
+  
   idx_blocksize = 0;
   next_bs_change = block_sizes[idx_blocksize];
   for (i = 0; i < number_of_variables; i++) {
@@ -5062,7 +5848,7 @@ static coco_problem_t *transform_vars_permblockdiag(coco_problem_t *inner_proble
     data->block_size_map[i] = current_blocksize;
     data->first_non_zero_map[i] = next_bs_change - current_blocksize;/* next_bs_change serves also as a cumsum for blocksizes*/
   }
-
+  
   problem = coco_problem_transformed_allocate(inner_problem, data, transform_vars_permblockdiag_free, "transform_vars_permblockdiag");
   problem->evaluate_function = transform_vars_permblockdiag_evaluate;
   return problem;
@@ -5079,9 +5865,9 @@ static double f_ellipsoid_raw(const double *x, const size_t number_of_variables)
   static const double condition = 1.0e6;
   size_t i = 0;
   double result;
-
+    
   if (coco_vector_contains_nan(x, number_of_variables))
-  	return NAN;
+    return NAN;
 
   result = x[i] * x[i];
   for (i = 1; i < number_of_variables; ++i) {
@@ -5102,12 +5888,31 @@ static void f_ellipsoid_evaluate(coco_problem_t *problem, const double *x, doubl
 }
 
 /**
+ * @brief Evaluates the gradient of the ellipsoid function.
+ */
+static void f_ellipsoid_evaluate_gradient(coco_problem_t *problem, 
+                                          const double *x, 
+                                          double *y) {
+
+  static const double condition = 1.0e6;
+  double exponent;
+  size_t i = 0;
+  
+  for (i = 0; i < problem->number_of_variables; ++i) {
+    exponent = 1.0 * (double) (long) i / ((double) (long) problem->number_of_variables - 1.0);
+    y[i] = 2.0*pow(condition, exponent) * x[i];
+  }
+ 
+}
+
+/**
  * @brief Allocates the basic ellipsoid problem.
  */
 static coco_problem_t *f_ellipsoid_allocate(const size_t number_of_variables) {
 
   coco_problem_t *problem = coco_problem_allocate_from_scalars("ellipsoid function",
       f_ellipsoid_evaluate, NULL, number_of_variables, -5.0, 5.0, 0.0);
+  problem->evaluate_gradient = f_ellipsoid_evaluate_gradient;
   coco_problem_set_id(problem, "%s_d%02lu", "ellipsoid", number_of_variables);
 
   /* Compute best solution */
@@ -5201,17 +6006,17 @@ static coco_problem_t *f_ellipsoid_permblockdiag_bbob_problem_allocate(const siz
   size_t nb_blocks;
   size_t swap_range;
   size_t nb_swaps;
-
+  
   block_sizes = ls_get_block_sizes(&nb_blocks, dimension);
   swap_range = ls_get_swap_range(dimension);
   nb_swaps = ls_get_nb_swaps(dimension);
 
   /*printf("f:%zu  n:%zu  i:%zu  bs:[%zu,...,%zu,%zu]  sR:%zu\n", function, dimension, instance, block_sizes[0], block_sizes[0],block_sizes[nb_blocks-1], swap_range);*/
-
+  
   xopt = coco_allocate_vector(dimension);
   bbob2009_compute_xopt(xopt, rseed, dimension);
   fopt = bbob2009_compute_fopt(function, instance);
-
+  
   B = ls_allocate_blockmatrix(dimension, block_sizes, nb_blocks);
   B_copy = (const double *const *)B;/*TODO: silences the warning, not sure if it prevents the modification of B at all levels*/
 
@@ -5219,7 +6024,7 @@ static coco_problem_t *f_ellipsoid_permblockdiag_bbob_problem_allocate(const siz
   ls_compute_truncated_uniform_swap_permutation(P1, rseed + 2000000, dimension, nb_swaps, swap_range);
   ls_compute_truncated_uniform_swap_permutation(P2, rseed + 3000000, dimension, nb_swaps, swap_range);
 
-
+  
   problem = f_ellipsoid_allocate(dimension);
   problem = transform_vars_oscillate(problem);
   problem = transform_vars_permblockdiag(problem, B_copy, P1, P2, dimension, block_sizes, nb_blocks);
@@ -5234,13 +6039,79 @@ static coco_problem_t *f_ellipsoid_permblockdiag_bbob_problem_allocate(const siz
   coco_free_memory(P1);
   coco_free_memory(P2);
   coco_free_memory(block_sizes);
-
+  
   return problem;
 }
 
+/**
+ * @brief Creates the ellipsoid problem for the constrained BBOB suite
+ */
+static coco_problem_t *f_ellipsoid_cons_bbob_problem_allocate(const size_t function,
+                                                         const size_t dimension,
+                                                         const size_t instance,
+                                                         const long rseed,
+                                                         const char *problem_id_template,
+                                                         const char *problem_name_template) {
+  double *xopt, fopt;
+  coco_problem_t *problem = NULL;
 
+  xopt = coco_allocate_vector(dimension);
+  fopt = bbob2009_compute_fopt(function, instance);
+  bbob2009_compute_xopt(xopt, rseed, dimension);
 
+  problem = f_ellipsoid_allocate(dimension);
+  /* TODO (NH): fopt -= problem->evaluate(all_zeros(dimension)) */
+  problem = transform_vars_shift(problem, xopt, 0);
+  problem = transform_obj_shift(problem, fopt);
+  
+  coco_problem_set_id(problem, problem_id_template, function, instance, dimension);
+  coco_problem_set_name(problem, problem_name_template, function, instance, dimension);
+  coco_problem_set_type(problem, "1-separable");
 
+  coco_free_memory(xopt);
+  return problem;
+}
+
+/**
+ * @brief Creates the rotated ellipsoid problem for the constrained
+ *        BBOB suite
+ */
+static coco_problem_t *f_ellipsoid_rotated_cons_bbob_problem_allocate(const size_t function,
+                                                                 const size_t dimension,
+                                                                 const size_t instance,
+                                                                 const long rseed,
+                                                                 const char *problem_id_template,
+                                                                 const char *problem_name_template) {
+  double *xopt, fopt;
+  coco_problem_t *problem = NULL;
+
+  double *M = coco_allocate_vector(dimension * dimension);
+  double *b = coco_allocate_vector(dimension);
+  double **rot1;
+
+  xopt = coco_allocate_vector(dimension);
+  bbob2009_compute_xopt(xopt, rseed, dimension);
+  fopt = bbob2009_compute_fopt(function, instance);
+
+  rot1 = bbob2009_allocate_matrix(dimension, dimension);
+  bbob2009_compute_rotation(rot1, rseed + 1000000, dimension);
+  bbob2009_copy_rotation_matrix(rot1, M, b, dimension);
+  bbob2009_free_matrix(rot1, dimension);
+
+  problem = f_ellipsoid_allocate(dimension);
+  problem = transform_vars_affine(problem, M, b, dimension);
+  problem = transform_vars_shift(problem, xopt, 0);
+  problem = transform_obj_shift(problem, fopt);
+
+  coco_problem_set_id(problem, problem_id_template, function, instance, dimension);
+  coco_problem_set_name(problem, problem_name_template, function, instance, dimension);
+  coco_problem_set_type(problem, "3-ill-conditioned");
+
+  coco_free_memory(M);
+  coco_free_memory(b);
+  coco_free_memory(xopt);
+  return problem;
+}
 #line 15 "code-experiments/src/suite_bbob.c"
 #line 1 "code-experiments/src/f_gallagher.c"
 /**
@@ -5683,7 +6554,7 @@ static void f_katsuura_evaluate(coco_problem_t *problem, const double *x, double
 static coco_problem_t *f_katsuura_allocate(const size_t number_of_variables) {
 
   coco_problem_t *problem = coco_problem_allocate_from_scalars("Katsuura function",
-      f_katsuura_evaluate, NULL, number_of_variables, -5.0, 5.0, 1);
+      f_katsuura_evaluate, NULL, number_of_variables, -5.0, 5.0, 0.0);
   coco_problem_set_id(problem, "%s_d%02lu", "katsuura", number_of_variables);
 
   /* Compute best solution */
@@ -5774,10 +6645,10 @@ static double f_linear_slope_raw(const double *x,
   static const double alpha = 100.0;
   size_t i;
   double result = 0.0;
-
+  
   if (coco_vector_contains_nan(x, number_of_variables))
-  	return NAN;
-
+    return NAN;
+    
   for (i = 0; i < number_of_variables; ++i) {
     double base, exponent, si;
 
@@ -5809,6 +6680,30 @@ static void f_linear_slope_evaluate(coco_problem_t *problem, const double *x, do
 }
 
 /**
+ * @brief Evaluates the gradient of the linear slope function.
+ */
+static void f_linear_slope_evaluate_gradient(coco_problem_t *problem, 
+                                             const double *x, 
+                                             double *y) {
+
+  static const double alpha = 100.0;
+  double base, exponent, si;
+  size_t i;
+
+  (void)x; /* silence (C89) compiliers */
+  for (i = 0; i < problem->number_of_variables; ++i) {
+    base = sqrt(alpha);
+    exponent = (double) (long) i / ((double) (long) problem->number_of_variables - 1);
+    if (problem->best_parameter[i] > 0.0) {
+      si = pow(base, exponent);
+    } else {
+      si = -pow(base, exponent);
+    }
+    y[i] = -si;
+  }
+}
+
+/**
  * @brief Allocates the basic linear slope problem.
  */
 static coco_problem_t *f_linear_slope_allocate(const size_t number_of_variables, const double *best_parameter) {
@@ -5817,6 +6712,7 @@ static coco_problem_t *f_linear_slope_allocate(const size_t number_of_variables,
   /* best_parameter will be overwritten below */
   coco_problem_t *problem = coco_problem_allocate_from_scalars("linear slope function",
       f_linear_slope_evaluate, NULL, number_of_variables, -5.0, 5.0, 0.0);
+  problem->evaluate_gradient = f_linear_slope_evaluate_gradient;
   coco_problem_set_id(problem, "%s_d%02lu", "linear_slope", number_of_variables);
 
   /* Compute best solution */
@@ -5828,6 +6724,7 @@ static coco_problem_t *f_linear_slope_allocate(const size_t number_of_variables,
     }
   }
   f_linear_slope_evaluate(problem, problem->best_parameter, problem->best_value);
+  
   return problem;
 }
 
@@ -6096,6 +6993,40 @@ static void transform_vars_conditioning_evaluate(coco_problem_t *problem, const 
   assert(y[0] + 1e-13 >= problem->best_value[0]);
 }
 
+/**
+ * @brief Evaluates the gradient of the transformed function.
+ */
+static void transform_vars_conditioning_evaluate_gradient(coco_problem_t *problem, const double *x, double *y) {
+  size_t i;
+  transform_vars_conditioning_data_t *data;
+  coco_problem_t *inner_problem;
+  double *gradient;
+
+  if (coco_vector_contains_nan(x, coco_problem_get_dimension(problem))) {
+  	coco_vector_set_to_nan(y, coco_problem_get_number_of_objectives(problem));
+  	return;
+  }
+
+  data = (transform_vars_conditioning_data_t *) coco_problem_transformed_get_data(problem);
+  inner_problem = coco_problem_transformed_get_inner_problem(problem);
+
+  gradient = coco_allocate_vector(inner_problem->number_of_variables);
+  
+  for (i = 0; i < problem->number_of_variables; ++i) {
+    gradient[i] = pow(data->alpha, 0.5 * (double) (long) i / ((double) (long) problem->number_of_variables - 1.0));
+    data->x[i] = gradient[i] * x[i];
+  }
+  bbob_evaluate_gradient(inner_problem, data->x, y);
+  
+  for (i = 0; i < inner_problem->number_of_variables; ++i)
+    gradient[i] *= y[i];
+  
+  for (i = 0; i < inner_problem->number_of_variables; ++i)
+    y[i] = gradient[i];
+    
+  coco_free_memory(gradient);
+}
+
 static void transform_vars_conditioning_free(void *thing) {
   transform_vars_conditioning_data_t *data = (transform_vars_conditioning_data_t *) thing;
   coco_free_memory(data->x);
@@ -6113,6 +7044,7 @@ static coco_problem_t *transform_vars_conditioning(coco_problem_t *inner_problem
   data->alpha = alpha;
   problem = coco_problem_transformed_allocate(inner_problem, data, transform_vars_conditioning_free, "transform_vars_conditioning");
   problem->evaluate_function = transform_vars_conditioning_evaluate;
+  problem->evaluate_gradient = transform_vars_conditioning_evaluate_gradient;
 
   if (coco_problem_best_parameter_not_zero(inner_problem)) {
     coco_warning("transform_vars_conditioning(): 'best_parameter' not updated, set to NAN");
@@ -6134,9 +7066,9 @@ static double f_rastrigin_raw(const double *x, const size_t number_of_variables)
   size_t i = 0;
   double result;
   double sum1 = 0.0, sum2 = 0.0;
-
+    
   if (coco_vector_contains_nan(x, number_of_variables))
-  	return NAN;
+    return NAN;
 
   for (i = 0; i < number_of_variables; ++i) {
     sum1 += cos(coco_two_pi * x[i]);
@@ -6259,6 +7191,38 @@ static coco_problem_t *f_rastrigin_rotated_bbob_problem_allocate(const size_t fu
   coco_free_memory(M);
   coco_free_memory(b);
   coco_free_memory(xopt);
+  return problem;
+}
+
+/**
+ * @brief Creates the Rastrigin problem for the constrained BBOB suite.
+ */
+static coco_problem_t *f_rastrigin_cons_bbob_problem_allocate(const size_t function,
+                                                         const size_t dimension,
+                                                         const size_t instance,
+                                                         const long rseed,
+                                                         const char *problem_id_template,
+                                                         const char *problem_name_template) {
+
+  double *xshift, fopt;
+  coco_problem_t *problem = NULL;
+  size_t i;
+
+  (void)rseed;  /* silence (C89) compilers */
+  xshift = coco_allocate_vector(dimension);
+  fopt = bbob2009_compute_fopt(function, instance);
+  
+  for (i = 0; i < dimension; ++i)
+    xshift[i] = -1.0;
+
+  problem = f_rastrigin_allocate(dimension);
+  problem = transform_vars_shift(problem, xshift, 0);
+  problem = transform_obj_shift(problem, fopt);
+
+  coco_problem_set_id(problem, problem_id_template, function, instance, dimension);
+  coco_problem_set_name(problem, problem_name_template, function, instance, dimension);
+  coco_problem_set_type(problem, "1-separable");
+  coco_free_memory(xshift);
   return problem;
 }
 
@@ -6697,8 +7661,28 @@ static coco_problem_t *transform_vars_z_hat(coco_problem_t *inner_problem, const
 
   problem = coco_problem_transformed_allocate(inner_problem, data, transform_vars_z_hat_free, "transform_vars_z_hat");
   problem->evaluate_function = transform_vars_z_hat_evaluate;
-  /* TODO: When should this warning be output?
-   coco_warning("transform_vars_z_hat(): 'best_parameter' not updated"); */
+  /* TODO: implement best_parameter transformation if needed in the case of not zero:
+     see also issue #814.
+  The correct update of best_parameter seems not too difficult and should not anymore
+  break the current implementation of the Schwefel function. 
+   coco_warning("transform_vars_z_hat(): 'best_parameter' not updated"); 
+ 
+  This:
+  
+  size_t i;
+  if (problem->best_parameter != NULL)
+	for (i = 1; i < problem->number_of_variables; ++i)
+	  problem->best_parameter[i] -= 0.25 * (problem->best_parameter[i - 1] - 2.0 * fabs(data->xopt[i - 1]));
+
+  should do, but gives
+  COCO INFO: ..., d=2, running: f18.Assertion failed: (about_equal_value(hypervolume, 8.1699208579037619e-05)), function test_coco_archive_extreme_solutions, file ./test_coco_archive.c, line 123.
+
+  */
+  if (strstr(coco_problem_get_id(inner_problem), "schwefel") == NULL) {
+    coco_warning("transform_vars_z_hat(): 'best_parameter' not updated, set to NAN.");
+    coco_vector_set_to_nan(problem->best_parameter, problem->number_of_variables);
+  }
+
   return problem;
 }
 #line 18 "code-experiments/src/f_schwefel.c"
@@ -6742,7 +7726,7 @@ static void transform_vars_x_hat_evaluate(coco_problem_t *problem, const double 
     bbob2009_unif(data->x, problem->number_of_variables, data->seed);
 
     for (i = 0; i < problem->number_of_variables; ++i) {
-      if (data->x[i] - 0.5 < 0.0) {
+      if (data->x[i] < 0.5) {
         data->x[i] = -x[i];
       } else {
         data->x[i] = x[i];
@@ -6767,7 +7751,6 @@ static void transform_vars_x_hat_free(void *thing) {
 static coco_problem_t *transform_vars_x_hat(coco_problem_t *inner_problem, const long seed) {
   transform_vars_x_hat_data_t *data;
   coco_problem_t *problem;
-  const char *result;
   size_t i;
 
   data = (transform_vars_x_hat_data_t *) coco_allocate_memory(sizeof(*data));
@@ -6776,22 +7759,13 @@ static coco_problem_t *transform_vars_x_hat(coco_problem_t *inner_problem, const
 
   problem = coco_problem_transformed_allocate(inner_problem, data, transform_vars_x_hat_free, "transform_vars_x_hat");
   problem->evaluate_function = transform_vars_x_hat_evaluate;
-  /* Dirty way of setting the best parameter of the transformed f_schwefel... */
-  bbob2009_unif(data->x, problem->number_of_variables, data->seed);
-  result = strstr(coco_problem_get_id(inner_problem), "schwefel");
-	if (result != NULL) {
-		for (i = 0; i < problem->number_of_variables; ++i) {
-			if (data->x[i] - 0.5 < 0.0) {
-				problem->best_parameter[i] = -0.5 * 4.2096874633;
-			} else {
-				problem->best_parameter[i] = 0.5 * 4.2096874633;
-			}
-		}
-	} else if (coco_problem_best_parameter_not_zero(inner_problem)) {
-		coco_warning("transform_vars_x_hat(): 'best_parameter' not updated, set to NAN");
-		coco_vector_set_to_nan(inner_problem->best_parameter, inner_problem->number_of_variables);
-	}
-	return problem;
+  if (coco_problem_best_parameter_not_zero(problem)) {
+    bbob2009_unif(data->x, problem->number_of_variables, data->seed);
+	for (i = 0; i < problem->number_of_variables; ++i)
+	  if (data->x[i] < 0.5)  /* with probability 1/2 */
+		problem->best_parameter[i] *= -1;
+  }
+  return problem;
 }
 #line 19 "code-experiments/src/f_schwefel.c"
 
@@ -6859,13 +7833,9 @@ static coco_problem_t *f_schwefel_bbob_problem_allocate(const size_t function,
                                                         const char *problem_name_template) {
   double *xopt, fopt;
   coco_problem_t *problem = NULL;
-  size_t i, j;
+  size_t i;
 
   const double condition = 10.;
-
-  double *M = coco_allocate_vector(dimension * dimension);
-  double *b = coco_allocate_vector(dimension);
-  double *current_row;
 
   double *tmp1 = coco_allocate_vector(dimension);
   double *tmp2 = coco_allocate_vector(dimension);
@@ -6874,22 +7844,7 @@ static coco_problem_t *f_schwefel_bbob_problem_allocate(const size_t function,
   fopt = bbob2009_compute_fopt(function, instance);
   bbob2009_unif(tmp1, dimension, rseed);
   for (i = 0; i < dimension; ++i) {
-    xopt[i] = 0.5 * 4.2096874637;
-    if (tmp1[i] - 0.5 < 0) {
-      xopt[i] *= -1;
-    }
-  }
-
-  for (i = 0; i < dimension; ++i) {
-    b[i] = 0.0;
-    current_row = M + i * dimension;
-    for (j = 0; j < dimension; ++j) {
-      current_row[j] = 0.0;
-      if (i == j) {
-        double exponent = 1.0 * (int) i / ((double) (long) dimension - 1);
-        current_row[j] = pow(sqrt(condition), exponent);
-      }
-    }
+    xopt[i] = (tmp1[i] < 0.5 ? -1 : 1) * 0.5 * 4.2096874637;
   }
 
   for (i = 0; i < dimension; ++i) {
@@ -6901,9 +7856,10 @@ static coco_problem_t *f_schwefel_bbob_problem_allocate(const size_t function,
   problem = transform_obj_shift(problem, fopt);
   problem = transform_vars_scale(problem, 100);
   problem = transform_vars_shift(problem, tmp1, 0);
-  problem = transform_vars_affine(problem, M, b, dimension);
+  /* problem = transform_vars_affine(problem, M, b, dimension); */
+  problem = transform_vars_conditioning(problem, condition);
   problem = transform_vars_shift(problem, tmp2, 0);
-  problem = transform_vars_z_hat(problem, xopt);
+  problem = transform_vars_z_hat(problem, xopt); /* only for the correct xopt the best_parameter is not changed */
   problem = transform_vars_scale(problem, 2);
   problem = transform_vars_x_hat(problem, rseed);
 
@@ -6911,8 +7867,6 @@ static coco_problem_t *f_schwefel_bbob_problem_allocate(const size_t function,
   coco_problem_set_name(problem, problem_name_template, function, instance, dimension);
   coco_problem_set_type(problem, "5-weakly-structured");
 
-  coco_free_memory(M);
-  coco_free_memory(b);
   coco_free_memory(tmp1);
   coco_free_memory(tmp2);
   coco_free_memory(xopt);
@@ -6951,7 +7905,7 @@ static double f_sharp_ridge_raw(const double *x, const size_t number_of_variable
   	return NAN;
 
   result = 0.0;
-  for (i = ceil(vars_40); i < number_of_variables; ++i) {
+  for (i = coco_double_to_size_t(ceil(vars_40)); i < number_of_variables; ++i) {
     result += x[i] * x[i];
   }
   result = alpha * sqrt(result / vars_40);
@@ -7058,9 +8012,9 @@ static double f_sphere_raw(const double *x, const size_t number_of_variables) {
 
   size_t i = 0;
   double result;
-
+    
   if (coco_vector_contains_nan(x, number_of_variables))
-  	return NAN;
+    return NAN;
 
   result = 0.0;
   for (i = 0; i < number_of_variables; ++i) {
@@ -7080,12 +8034,25 @@ static void f_sphere_evaluate(coco_problem_t *problem, const double *x, double *
 }
 
 /**
+ * @brief Evaluates the gradient of the sphere function.
+ */
+static void f_sphere_evaluate_gradient(coco_problem_t *problem, const double *x, double *y) {
+
+  size_t i;
+
+  for (i = 0; i < problem->number_of_variables; ++i) {
+    y[i] = 2.0 * x[i];
+  }
+}
+
+/**
  * @brief Allocates the basic sphere problem.
  */
 static coco_problem_t *f_sphere_allocate(const size_t number_of_variables) {
-
+	
   coco_problem_t *problem = coco_problem_allocate_from_scalars("sphere function",
-      f_sphere_evaluate, NULL, number_of_variables, -5.0, 5.0, 0.0);
+     f_sphere_evaluate, NULL, number_of_variables, -5.0, 5.0, 0.0);
+  problem->evaluate_gradient = f_sphere_evaluate_gradient;
   coco_problem_set_id(problem, "%s_d%02lu", "sphere", number_of_variables);
 
   /* Compute best solution */
@@ -7267,7 +8234,7 @@ static coco_problem_t *f_step_ellipsoid_bbob_problem_allocate(const size_t funct
   bbob2009_compute_rotation(data->rot2, rseed, dimension);
 
   problem->data = data;
-
+  
   /* Compute best solution
    *
    * OME: Dirty hack for now because I did not want to invert the
@@ -7457,7 +8424,7 @@ static coco_suite_t *suite_bbob_initialize(void) {
   const size_t dimensions[] = { 2, 3, 5, 10, 20, 40 };
 
   /* IMPORTANT: Make sure to change the default instance for every new workshop! */
-  suite = coco_suite_allocate("bbob", 24, 6, dimensions, "year: 2017");
+  suite = coco_suite_allocate("bbob", 24, 6, dimensions, "year: 2018");
 
   return suite;
 }
@@ -7488,6 +8455,10 @@ static const char *suite_bbob_get_instances_by_year(const int year) {
   else if (year == 2017) {
     return "1-5,61-70";
   }
+  else if (year == 2018) {
+    return "1-5,71-80";
+  }
+
   else {
     coco_error("suite_bbob_get_instances_by_year(): year %d not defined for suite_bbob", year);
     return NULL;
@@ -7812,7 +8783,7 @@ static double mo_get_distance_to_ROI(const double *normalized_y, const size_t nu
  *
  * @note Because this file is used for automatically retrieving the existing best hypervolume values for
  * pre-processing purposes, its formatting should not be altered. This means that there must be exactly one
- * string per line, the first string appearing on the next line after "static const char..." (no comments
+ * string per line, the first string appearing on the next line after "static const char..." (no comments 
  * allowed in between). Nothing should be placed on the last line (line with };).
  */
 static const char *suite_biobj_best_values_hyp[] = { /* Best values on 29.01.2017 16:30:00, copied from: best values current data, 10.07.2016 */
@@ -9675,7 +10646,7 @@ static const char *suite_biobj_best_values_hyp[] = { /* Best values on 29.01.201
   "bbob-biobj_f21_i10_d05 0.979604346471867",
   "bbob-biobj_f21_i10_d10 0.977275303898697",
   "bbob-biobj_f21_i10_d20 0.972982656541522",
-  "bbob-biobj_f21_i10_d40 0.997081448699098",
+  "bbob-biobj_f21_i10_d40 0.997081448699098",  
   "bbob-biobj_f21_i11_d02 1.0",
   "bbob-biobj_f21_i11_d03 1.0",
   "bbob-biobj_f21_i11_d05 1.0",
@@ -16157,7 +17128,7 @@ static coco_suite_t *suite_biobj_initialize(void) {
   const size_t dimensions[] = { 2, 3, 5, 10, 20, 40 };
 
   /* IMPORTANT: Make sure to change the default instance for every new workshop! */
-  suite = coco_suite_allocate("bbob-biobj", 55, 6, dimensions, "year: 2017");
+  suite = coco_suite_allocate("bbob-biobj", 55, 6, dimensions, "year: 2018");
 
   return suite;
 }
@@ -16170,7 +17141,7 @@ static const char *suite_biobj_get_instances_by_year(const int year) {
   if ((year == 2016) || (year == 0000)) { /* default/test case */
     return "1-10";
   }
-  else if (year == 2017) {
+  else if ((year == 2017) || (year == 2018)) {
     return "1-15";
   }
   else {
@@ -16470,7 +17441,7 @@ static double suite_biobj_get_best_value(const char *indicator_name, const char 
 
   if (strcmp(indicator_name, "hyp") == 0) {
 
-    curr_key = coco_allocate_string(COCO_PATH_MAX);
+    curr_key = coco_allocate_string(COCO_PATH_MAX + 1);
     count = sizeof(suite_biobj_best_values_hyp) / sizeof(char *);
     for (i = 0; i < count; i++) {
       sscanf(suite_biobj_best_values_hyp[i], "%s %lf", curr_key, &best_value);
@@ -16543,8 +17514,8 @@ static const size_t suite_biobj_ext_instances[][3] = {
     { 13, 27, 28 },
     { 14, 29, 30 },
     { 15, 31, 34 }
-};
-
+}; 
+ 
 /**
  * @brief The bbob-biobj-ext suite data type.
  */
@@ -16579,7 +17550,7 @@ static coco_suite_t *suite_biobj_ext_initialize(void) {
   const size_t dimensions[] = { 2, 3, 5, 10, 20, 40 };
 
   /* IMPORTANT: Make sure to change the default instance for every new workshop! */
-  suite = coco_suite_allocate("bbob-biobj-ext", 55+37, 6, dimensions, "year: 2017");
+  suite = coco_suite_allocate("bbob-biobj-ext", 55+37, 6, dimensions, "year: 2018");
 
   return suite;
 }
@@ -16592,7 +17563,7 @@ static const char *suite_biobj_ext_get_instances_by_year(const int year) {
   if (year == 0000) { /* default/test case */
     return "1-10";
   }
-  else if (year == 2017) {
+  else if ((year == 2017) || (year == 2018)) {
     return "1-15";
   }
   else {
@@ -16626,13 +17597,13 @@ static coco_problem_t *suite_biobj_ext_get_problem(coco_suite_t *suite,
                                                const size_t dimension_idx,
                                                const size_t instance_idx) {
 
-
+  
   const size_t num_bbob_functions = 10;
   /* Functions from the bbob suite that are used to construct the original bbob-biobj suite. */
   const size_t bbob_functions[] = { 1, 2, 6, 8, 13, 14, 15, 17, 20, 21 };
   /* All functions from the bbob suite for later use during instance generation. */
   const size_t all_bbob_functions[] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24 };
-
+  
   coco_problem_t *problem1, *problem2, *problem = NULL;
   size_t instance1 = 0, instance2 = 0;
   size_t function1_idx, function2_idx;
@@ -16648,7 +17619,7 @@ static coco_problem_t *suite_biobj_ext_get_problem(coco_suite_t *suite,
 
   double *smallest_values_of_interest = coco_allocate_vector_with_value(dimension, -100);
   double *largest_values_of_interest = coco_allocate_vector_with_value(dimension, 100);
-
+  
   /* First, create all problems from the bbob-biobj suite */
   if (function_idx < 55) {
     /* A "magic" formula to compute the BBOB function index from the bi-objective function index */
@@ -16657,7 +17628,7 @@ static coco_problem_t *suite_biobj_ext_get_problem(coco_suite_t *suite,
             floor(-0.5 + sqrt(0.25 + 2.0 * (double) (55 - function_idx - 1)))) - 1;
     function2_idx = function_idx - (function1_idx * num_bbob_functions) +
         (function1_idx * (function1_idx + 1)) / 2;
-
+        
   } else {
     /* New 41 functions extending the bbob-biobj suite,
      * unfortunately, there is not a simple "magic" formula anymore. */
@@ -16772,9 +17743,9 @@ static coco_problem_t *suite_biobj_ext_get_problem(coco_suite_t *suite,
     } else if (function_idx == 91) {
         function1_idx = 22;
         function2_idx = 23;
-    }
+    } 
   }
-
+      
   /* First search for instance in suite_biobj_ext_instances */
   for (i = 0; i < num_existing_instances; i++) {
     if (suite_biobj_ext_instances[i][0] == instance) {
@@ -16820,7 +17791,7 @@ static coco_problem_t *suite_biobj_ext_get_problem(coco_suite_t *suite,
           data->new_instances[i][j] = 0;
         }
       }
-      suite->data_free_function = suite_biobj_free;
+      suite->data_free_function = suite_biobj_ext_free;
       suite->data = data;
     }
 
@@ -16830,17 +17801,17 @@ static coco_problem_t *suite_biobj_ext_get_problem(coco_suite_t *suite,
     instance1 = 2 * instance + 1;
     instance2 = suite_biobj_ext_get_new_instance(suite, instance, instance1, 24, all_bbob_functions);
   }
-
-  if (function_idx < 55) {
+  
+  if (function_idx < 55) {  
     problem1 = coco_get_bbob_problem(bbob_functions[function1_idx], dimension, instance1);
     problem2 = coco_get_bbob_problem(bbob_functions[function2_idx], dimension, instance2);
   } else {
     problem1 = coco_get_bbob_problem(all_bbob_functions[function1_idx], dimension, instance1);
     problem2 = coco_get_bbob_problem(all_bbob_functions[function2_idx], dimension, instance2);
   }
-
+  
   problem = coco_problem_stacked_allocate(problem1, problem2, smallest_values_of_interest, largest_values_of_interest);
-
+    
   problem->suite_dep_function = function;
   problem->suite_dep_instance = instance;
   problem->suite_dep_index = coco_suite_encode_problem_index(suite, function_idx, dimension_idx, instance_idx);
@@ -16865,7 +17836,7 @@ static coco_problem_t *suite_biobj_ext_get_problem(coco_suite_t *suite,
  * instances given should break the search for new instances in
  * suite_biobj_ext_get_new_instance(...).
  */
-static int check_consistency_of_instances(const size_t dimension,
+static int check_consistency_of_instances(const size_t dimension, 
                                           size_t function1,
                                           size_t instance1,
                                           size_t function2,
@@ -16876,7 +17847,7 @@ static int check_consistency_of_instances(const size_t dimension,
   double norm;
   double *smallest_values_of_interest, *largest_values_of_interest;
   const double apart_enough = 1e-4;
-
+  
   problem1 = coco_get_bbob_problem(function1, dimension, instance1);
   problem2 = coco_get_bbob_problem(function2, dimension, instance2);
 
@@ -16919,7 +17890,7 @@ static int check_consistency_of_instances(const size_t dimension,
   return break_search;
 
 }
-
+  
 /**
  * @brief Computes the instance number of the second problem/objective so that the resulting bi-objective
  * problem has more than a single optimal solution.
@@ -16945,7 +17916,7 @@ static size_t suite_biobj_ext_get_new_instance(coco_suite_t *suite,
   size_t d, f1, f2, i;
   size_t function1, function2, dimension;
   const size_t reduced_bbob_functions[] = { 1, 2, 6, 8, 13, 14, 15, 17, 20, 21 };
-
+  
   suite_biobj_ext_t *data;
   assert(suite->data);
   data = (suite_biobj_ext_t *) suite->data;
@@ -16958,40 +17929,40 @@ static size_t suite_biobj_ext_get_new_instance(coco_suite_t *suite,
     /* An instance is "appropriate" if the ideal and nadir points in the objective space and the two
      * extreme optimal points in the decisions space are apart enough for all problems (all dimensions
      * and function combinations); therefore iterate over all dimensions and function combinations  */
-
+     
     for (f1 = 0; (f1 < num_bbob_functions-1) && !break_search; f1++) {
       function1 = bbob_functions[f1];
       for (f2 = f1+1; (f2 < num_bbob_functions) && !break_search; f2++) {
         function2 = bbob_functions[f2];
         for (d = 0; (d < suite->number_of_dimensions) && !break_search; d++) {
           dimension = suite->dimensions[d];
-
+          
           if (dimension == 0) {
             if (!warning_produced)
               coco_warning("suite_biobj_ext_get_new_instance(): remove filtering of dimensions to get generally acceptable instances!");
             warning_produced = 1;
             continue;
           }
-
+          
           break_search = check_consistency_of_instances(dimension, function1, instance1, function2, instance2);
         }
       }
     }
-
+    
     /* Finally, check all functions (f,f) with f in {f1, f2, f6, f8, f13, f14, f15, f17, f20, f21}: */
     for (f1 = 0; (f1 < 10) && !break_search; f1++) {
       function1 = reduced_bbob_functions[f1];
       function2 = reduced_bbob_functions[f1];
       for (d = 0; (d < suite->number_of_dimensions) && !break_search; d++) {
         dimension = suite->dimensions[d];
-
+        
         if (dimension == 0) {
             if (!warning_produced)
               coco_warning("suite_biobj_ext_get_new_instance(): remove filtering of dimensions to get generally acceptable instances!");
             warning_produced = 1;
             continue;
           }
-
+          
         break_search = check_consistency_of_instances(dimension, function1, instance1, function2, instance2);
       }
     }
@@ -17150,7 +18121,7 @@ static coco_suite_t *coco_suite_allocate(const char *suite_name,
  * @brief Sets the dimensions and default instances for the bbob large-scale suite.
  */
 static coco_suite_t *suite_largescale_initialize(void) {
-
+  
   coco_suite_t *suite;
   /*const size_t dimensions[] = { 8, 16, 32, 64, 128, 256,512,1024};*/
   const size_t dimensions[] = { 40, 80, 160, 320, 640, 1280};
@@ -17197,22 +18168,1435 @@ static coco_problem_t *suite_largescale_get_problem(coco_suite_t *suite,
                                                     const size_t function_idx,
                                                     const size_t dimension_idx,
                                                     const size_t instance_idx) {
+  
+  coco_problem_t *problem = NULL;
+  
+  const size_t function = suite->functions[function_idx];
+  const size_t dimension = suite->dimensions[dimension_idx];
+  const size_t instance = suite->instances[instance_idx];
+  
+  problem = coco_get_largescale_problem(function, dimension, instance);
+  
+  problem->suite_dep_function = function;
+  problem->suite_dep_instance = instance;
+  problem->suite_dep_index = coco_suite_encode_problem_index(suite, function_idx, dimension_idx, instance_idx);
+  
+  return problem;
+}
+#line 23 "code-experiments/src/coco_suite.c"
+#line 1 "code-experiments/src/suite_cons_bbob.c"
+/**
+ * @file  suite_cons_bbob.c
+ * @brief Implementation of the constrained bbob suite containing 
+ *        48 constrained problems in 6 dimensions. See comments in
+ *        "suite_cons_bbob_problems.c" for more details.
+ */
 
+#line 9 "code-experiments/src/suite_cons_bbob.c"
+#line 1 "code-experiments/src/suite_cons_bbob_problems.c"
+/**
+ * @file  suite_cons_bbob_problems.c
+ * @brief Implementation of the problems in the constrained BBOB suite.
+ * 
+ * This suite contains 48 constrained functions in continuous domain 
+ * which are derived from combining 8 single-objective functions of the
+ * noiseless bbob test suite with randomly-generated 
+ * linear constraints perturbed by nonlinear transformations.
+ * Each one of the 8 functions is combined with 6 different numbers of 
+ * constraints: 1, 2, 6, 6+n/2, 6+n and 6+3n.
+ * 
+ * We consider constrained optimization problems of the form
+ * 
+ *     min f(x) s.t. g_i(x) <= 0, i=1,...,l.
+ * 
+ * The constrained functions are built in a way such that the 
+ * KKT conditions are satisied at the origin, which is the initial
+ * optimal solution. We then translate the constrained function
+ * by a random vector in order to move the optimal solution away
+ * from the origin. 
+ * 
+ * ***************************************************
+ * General idea for building the constrained functions
+ * ***************************************************
+ * 
+ * 1. Choose a bbob function f whose raw version is pseudoconvex
+ *    to be the objective function. (see note below)
+ * 2. Remove possible nonlinear transformations from f. (see note below)
+ * 3. In order to make sure that the feasible set is not empty,
+ *    we choose a direction p that should be feasible.
+ *    Define p as the gradient of f at the origin.
+ * 4. Define the first constraint g_1(x)=a_1'*x by setting its gradient
+ *    to a_1 = -p. By definition, g_1(p) < 0. Thus p is feasible
+ *    for g_1.
+ * 5. Generate the other constraints randomly while making sure that 
+ *    p remains feasible for each one.
+ * 6. Apply to the whole constrained function the nonlinear transformations 
+ *    that were removed from the objective function in Step 2. (see note below)
+ * 7. Choose a random point xopt and move the optimum away from the 
+ *    origin to xopt by translating the constrained function by -xopt.
+ * 
+ * @note The pseudoconvexity in Step 1 guarantees that the KKT conditions 
+ *       are sufficient for optimality.
+ * 
+ * @note The removal of possible nonlinear transformations in Step 2
+ *       and posterior application in Step 6 are necessary to make
+ *       sure that the KKT conditions are satisfied in the optimum
+ *       - until then the origin. As explained in the documentation, 
+ *       the application of the nonlinear transformations in Step 6 
+ *       does not affect the location of the optimum.
+ * 
+ * @note a_1 is set to -p, i.e. the negative gradient of f at the origin, 
+ *       in order to have the KKT conditions easily satisfied.
+ *
+ * @note Steps 1 and 2 are done within the 'allocate' function of the
+ *       objective function, e.g. f_ellipsoid_cons_bbob_problem_allocate().
+ * 
+ * @note Steps 4 and 5 are done within c_linear_cons_bbob_problem_allocate().
+ * 
+ * @note The constrained Rastrigin function's construction differs a bit
+ *       from the steps above. Since it is a multimodal function with
+ *       well distributed local optima, we choose one of its local optima
+ *       to be the global constrained optimum by adding constraints 
+ *       that pass through that point.
+ * 
+ * @note The testbed provides the user an initial solution which is given
+ *       by the feasible direction p scaled by some constant.
+ * 
+ * *************************************************
+ * COCO data structure for the constrained functions
+ * *************************************************
+ * 
+ * First, we create a coco_problem_t object for the objective function.
+ * Then, coco_problem_t objects are created for each constraint and
+ * stacked together into a single coco_problem_t object (see "c_linear.c"). 
+ * Finally, the coco_problem_t object containing the constraints and 
+ * the coco_problem_t object containing the objective function are 
+ * stacked together to form the constrained function.
+ * 
+ */
+
+#include <math.h>
+
+#line 85 "code-experiments/src/suite_cons_bbob_problems.c"
+#line 86 "code-experiments/src/suite_cons_bbob_problems.c"
+#line 87 "code-experiments/src/suite_cons_bbob_problems.c"
+#line 1 "code-experiments/src/c_linear.c"
+/**
+ * @file  c_linear.c
+ * @brief Implements the linear constraints for the suite of 
+ *        constrained problems.
+ */
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <math.h>
+#include <assert.h>
+
+#line 14 "code-experiments/src/c_linear.c"
+#line 15 "code-experiments/src/c_linear.c"
+/**
+ * @brief Data type for the linear constraints.
+ */
+typedef struct {
+  double *gradient;
+  double *x;
+} linear_constraint_data_t;	
+
+static void c_sum_variables_evaluate(coco_problem_t *self, 
+                                     const double *x, 
+                                     double *y);
+                                     
+static void c_linear_single_evaluate(coco_problem_t *self, 
+                                     const double *x, 
+                                     double *y);
+                                        
+static coco_problem_t *c_guarantee_feasible_point(coco_problem_t *problem,
+                                                  const double *feasible_point);
+                                               
+static void c_linear_gradient_free(void *thing);
+
+static coco_problem_t *c_sum_variables_allocate(const size_t number_of_variables);
+
+static coco_problem_t *c_linear_transform(coco_problem_t *inner_problem, 
+                                          const double *gradient);
+         
+static coco_problem_t *c_linear_shuffle(coco_problem_t *problem_c, 
+                                        linear_constraint_data_t *data_c1);
+                                                   
+static coco_problem_t *c_linear_single_cons_bbob_problem_allocate(const size_t function,
+                                                      const size_t dimension,
+                                                      const size_t instance,
+                                                      const size_t number_of_linear_constraints,
+                                                      const size_t constraint_number,
+                                                      const double factor1,
+                                                      const char *problem_id_template,
+                                                      const char *problem_name_template,
+                                                      double *gradient,
+                                                      const double *feasible_direction);
+                                                      
+static coco_problem_t *c_linear_cons_bbob_problem_allocate(const size_t function,
+                                                      const size_t dimension,
+                                                      const size_t instance,
+                                                      const size_t number_of_linear_constraints,
+                                                      const char *problem_id_template,
+                                                      const char *problem_name_template,
+                                                      const double *feasible_direction);
+
+/**
+ * @brief Evaluates the linear constraint with all-ones gradient at
+ *        the point 'x' and stores the result into 'y'.
+ */
+static void c_sum_variables_evaluate(coco_problem_t *self, 
+                                     const double *x, 
+                                     double *y) {
+	
+  size_t i;
+
+  assert(self->number_of_constraints == 1);
+  
+  y[0] = 0.0;
+  for (i = 0; i < self->number_of_variables; ++i)
+    y[0] += x[i];
+}	
+
+/**
+ * @brief Evaluates the linear constraint at the point 'x' and stores
+ *        the result in 'y'.
+ */
+static void c_linear_single_evaluate(coco_problem_t *self, 
+                                     const double *x, 
+                                     double *y) {
+	
+  size_t i;
+  
+  linear_constraint_data_t *data;
+  coco_problem_t *inner_problem;
+  
+  data = (linear_constraint_data_t *) coco_problem_transformed_get_data(self);
+  inner_problem = coco_problem_transformed_get_inner_problem(self);
+  
+  assert(self->number_of_constraints == 1);
+			
+  for (i = 0; i < self->number_of_variables; ++i)
+    data->x[i] = (data->gradient[i])*x[i];
+  
+  coco_evaluate_constraint(inner_problem, data->x, y);
+  
+  inner_problem = NULL;
+  data = NULL;
+}
+
+/**
+ * @brief Guarantees that "feasible_direction" is feasible w.r.t. 
+ *        the constraint in "problem" and records it as the 
+ *        initial feasible solution to this coco_problem.
+ */
+static coco_problem_t *c_guarantee_feasible_point(coco_problem_t *problem,
+                                                const double *feasible_direction) {
+  
+  size_t i;
+  linear_constraint_data_t *data;
+  double constraint_value = 0.0;
+  
+  data = (linear_constraint_data_t *) coco_problem_transformed_get_data(problem);
+  
+  assert(problem->number_of_constraints == 1);
+  
+  /* Let p be the gradient of the constraint in "problem".
+   * Check whether p' * (feasible_direction) <= 0.
+   */
+  coco_evaluate_constraint(problem, feasible_direction, &constraint_value);
+  
+  /* Flip the constraint in "problem" if feasible_direction
+   * is not feasible w.r.t. the constraint in "problem".
+   */
+  if (constraint_value > 0)
+    for (i = 0; i < problem->number_of_variables; ++i)
+      data->gradient[i] *= -1.0;
+          
+  problem->initial_solution = coco_duplicate_vector(feasible_direction, 
+      problem->number_of_variables);
+ 
+  data = NULL;  
+  return problem;
+}
+
+/**
+ * @brief Frees the data object.
+ */
+static void c_linear_gradient_free(void *thing) {
+	
+  linear_constraint_data_t *data = (linear_constraint_data_t *) thing;
+  coco_free_memory(data->gradient);
+  coco_free_memory(data->x);
+}
+
+/**
+ * @brief Allocates a linear constraint coco_problem_t with all-ones gradient.
+ */
+static coco_problem_t *c_sum_variables_allocate(const size_t number_of_variables) {
+
+  size_t i;
+  coco_problem_t *problem = coco_problem_allocate(number_of_variables, 0, 1);
+
+  problem->evaluate_constraint = c_sum_variables_evaluate;
+  
+  coco_problem_set_id(problem, "%s_d%02lu", "linearconstraint", number_of_variables);
+
+  for (i = 0; i < number_of_variables; ++i) {
+    problem->smallest_values_of_interest[i] = -5.0;
+    problem->largest_values_of_interest[i] = 5.0;
+  }
+  return problem;
+}
+
+/**
+ * @brief Transforms a linear constraint with all-ones gradient
+ *        into a linear constraint whose gradient is passed 
+ *        as argument.
+ */
+static coco_problem_t *c_linear_transform(coco_problem_t *inner_problem, 
+                                          const double *gradient) {
+  
+  linear_constraint_data_t *data;
+  coco_problem_t *self;
+  data = coco_allocate_memory(sizeof(*data));
+  data->gradient = coco_duplicate_vector(gradient, inner_problem->number_of_variables);
+  data->x = coco_allocate_vector(inner_problem->number_of_variables);
+  self = coco_problem_transformed_allocate(inner_problem, data, 
+      c_linear_gradient_free, "gradient_linear_constraint");
+  self->evaluate_constraint = c_linear_single_evaluate;
+
+  return self;
+}
+
+/**
+ * @brief Exchange the first constraint for another one, if any, by
+ *        exchanging their gradients.
+ * 
+ * It picks a random constraint number different from one and runs
+ * through the stack of constraints until the chosen constraint is found.
+ * Then it extracts the gradient from it and exchange it for the
+ * first constraint's.
+ */
+static coco_problem_t *c_linear_shuffle(coco_problem_t *problem_c,
+                                        linear_constraint_data_t *data_c1) {
+  
+  coco_problem_t *iter_problem;
+  coco_problem_stacked_data_t *stacked_data;
+  linear_constraint_data_t *constraint_data;
+  coco_random_state_t *random_generator;
+  double aux;
+  size_t i, exchanged;
+  
+  /* Nothing to do if there is only one constraint */
+  if (problem_c->number_of_constraints < 2)
+    return problem_c;
+  
+  iter_problem = problem_c;
+  
+  /* Pick up a random constraint number other than 1.
+   * formula for U[M,N]: 
+   * random = M + (rand() / (RAND_MAX + 1.0)) * (N - M + 1)
+   * 
+   * Notes:
+   * 
+   * 1. (rand() / (RAND_MAX + 1.0)) ranges from 0.0 to 0.9999. The 1.0
+   *    instead of 1 causes RAND_MAX + 1.0 to be evaluated as a double.
+   * 
+   * 2. 'random' ranges from M to (N+0.9999), but, since 'exchanged'
+   *    is of type size_t, the fraction is discarded.
+   */
+  random_generator = coco_random_new(1); /* TODO: choose problem-dependent seed */
+  exchanged = coco_double_to_size_t(2 + coco_random_uniform(random_generator) * (double)(problem_c->number_of_constraints - 1)); /*(rand() / (RAND_MAX + 1.0)) * (problem_c->number_of_constraints - 2 + 1);*/
+  
+  /* Run through the stack until the chosen constraint is found */
+  for (i = problem_c->number_of_constraints; i > exchanged; --i) {
+    stacked_data = (coco_problem_stacked_data_t*) iter_problem->data;
+    iter_problem = stacked_data->problem1;
+  }
+  
+  stacked_data = (coco_problem_stacked_data_t*) iter_problem->data;
+  /* stacked_data->problem1 contains the other problems in the stack
+   * while stacked_data->problem2 contains the sought problem whose
+   * number is given by the value of 'exchanged'
+   */
+  iter_problem = stacked_data->problem2;
+  
+  constraint_data = (linear_constraint_data_t *) coco_problem_transformed_get_data(iter_problem);
+  
+  /* Exchange the gradients */
+  for (i = 0; i < problem_c->number_of_variables; ++i) {
+    aux = constraint_data->gradient[i];
+    constraint_data->gradient[i] = data_c1->gradient[i];
+    data_c1->gradient[i] = aux;
+  }
+  coco_random_free(random_generator);
+  return problem_c;
+}
+
+/**
+ * @brief Builds a coco_problem_t containing one single linear constraint.
+ * 
+ * This function is called by c_linear_cons_bbob_problem_allocate(),
+ * the central function that stacks all the constraints built by
+ * c_linear_single_cons_bbob_problem_allocate() into one single
+ * coco_problem_t object.
+ */
+static coco_problem_t *c_linear_single_cons_bbob_problem_allocate(const size_t function,
+                                                      const size_t dimension,
+                                                      const size_t instance,
+                                                      const size_t number_of_linear_constraints,
+                                                      const size_t constraint_number,
+                                                      const double factor1,
+                                                      const char *problem_id_template,
+                                                      const char *problem_name_template,
+                                                      double *gradient,
+                                                      const double *feasible_direction) {
+																			
+  size_t i;
+  
+  double *gradient_linear_constraint = NULL;
+  coco_problem_t *problem = NULL;
+  coco_random_state_t *random_generator;
+  long seed_cons_i;
+  double exp2, factor2;
+  
+  problem = c_sum_variables_allocate(dimension);
+  
+  seed_cons_i = (long)(function + 10000 * instance 
+                                + 50000 * constraint_number);
+  random_generator = coco_random_new((uint32_t) seed_cons_i);
+  
+  /* The constraints gradients are scaled with random numbers
+   * 10**U[0,1] and 10**U_i[0,2], where U[a, b] is uniform in [a,b] 
+   * and only U_i is drawn for each constraint individually. 
+   * The random number 10**U[0,1] is given by the variable 'factor1' 
+   * while the random number 10**U_i[0,2] is calculated below and 
+   * stored as 'factor2'. (The exception is when the number of
+   * constraints is n+1, in which case 'factor2' defines a random
+   * number 10**U_i[0,1])
+   */
+     
+  if (number_of_linear_constraints == dimension + 1)
+    exp2 = coco_random_uniform(random_generator);
+  else 
+    exp2 = 2.0 * coco_random_uniform(random_generator);
+  factor2 = pow(10.0, exp2);
+    
+  
+  /* Set the gradient of the linear constraint if it is given.
+   * This should be the case of the construction of the first 
+   * linear constraint only.
+   */
+  if(gradient) {
+	  
+    coco_scale_vector(gradient, dimension, 1.0);
+    for (i = 0; i < dimension; ++i)
+      gradient[i] *= factor1 * factor2;
+    
+    problem = c_linear_transform(problem, gradient);
+
+  }
+  else{ /* Randomly generate the gradient of the linear constraint */
+	  
+    gradient_linear_constraint = coco_allocate_vector(dimension);
+     
+    /* Generate a pseudorandom vector with distribution N_i(0, I)
+     * and scale it with 'factor1' and 'factor2' (see comments above)
+     */
+    for (i = 0; i < dimension; ++i)
+      gradient_linear_constraint[i] = factor1 * coco_random_normal(random_generator) * factor2;
+
+    problem = c_linear_transform(problem, gradient_linear_constraint);
+    coco_free_memory(gradient_linear_constraint);
+  }
+  
+  /* Guarantee that the vector feasible_point is feasible w.r.t. to
+   * this constraint and set it as the initial solution.
+   * The initial solution will be copied later to the constrained function
+   * coco_problem_t object once the objective function and the constraint(s) 
+   * are stacked together in coco_problem_stacked_allocate().
+   */
+  if(feasible_direction)
+    problem = c_guarantee_feasible_point(problem, feasible_direction);
+  
+  coco_problem_set_id(problem, problem_id_template, function, instance, dimension);
+  coco_problem_set_name(problem, problem_name_template, function, instance, dimension);
+  coco_problem_set_type(problem, "linear");
+  coco_random_free(random_generator);
+  return problem;
+  
+}
+
+/**
+ * @brief Builds a coco_problem_t containing all the linear constraints
+ *        by stacking them all.
+ * 
+ * The constraints' gradients are randomly generated with distribution
+ * 10**U[0,1] * N_i(0, I) * 10**U_i[0,2], where U[a, b] is uniform 
+ * in [a,b] and only U_i is drawn for each constraint individually. 
+ * The exception is the first constraint, whose gradient is given by
+ * 10**U[0,1] * (-feasible_direction) * 10**U_i[0,2].
+ * 
+ * Each constraint is built by calling the function
+ * c_linear_single_cons_bbob_problem_allocate(), which returns a
+ * coco_problem_t object that defines the constraint. The resulting
+ * coco_problem_t objects are then stacked together into one single
+ * coco_problem_t object that is returned by the function.
+ */
+static coco_problem_t *c_linear_cons_bbob_problem_allocate(const size_t function,
+                                                      const size_t dimension,
+                                                      const size_t instance,
+                                                      const size_t number_of_linear_constraints,
+                                                      const char *problem_id_template,
+                                                      const char *problem_name_template,
+                                                      const double *feasible_direction) {
+																																			
+  size_t i;
+  
+  coco_problem_t *problem_c = NULL;
+  coco_problem_t *problem_c2 = NULL;
+  linear_constraint_data_t *data_c1 = NULL;
+  coco_random_state_t *random_generator;
+  double *gradient_c1 = NULL;
+  long seed_cons;
+  double exp1, factor1;
+  
+  gradient_c1 = coco_allocate_vector(dimension);
+  																	
+  for (i = 0; i < dimension; ++i)
+    gradient_c1[i] = -feasible_direction[i];
+    
+  /* Build a coco_problem_t object for each constraint. 
+   * The constraints' gradients are generated randomly with
+   * distriution 10**U[0,1] * N_i(0, I) * 10**U_i[0,2]
+   * where U[a, b] is uniform in [a,b] and only U_i is drawn 
+   * for each constraint individually.
+   */
+  
+  /* Calculate the first random factor 10**U[0,1]. */
+  seed_cons = (long)(function + 10000 * instance);
+  random_generator = coco_random_new((uint32_t) seed_cons);
+  exp1 = coco_random_uniform(random_generator);
+  factor1 = pow(10.0, exp1);
+  
+  /* Build the first linear constraint using 'gradient_c1' to build
+   * its gradient.
+   */ 
+  problem_c = c_linear_single_cons_bbob_problem_allocate(function, 
+      dimension, instance, number_of_linear_constraints, 1, factor1, 
+      problem_id_template, problem_name_template, gradient_c1, 
+      feasible_direction);
+  
+  /* Store the pointer to the first gradient for later */
+  data_c1 = (linear_constraint_data_t *) coco_problem_transformed_get_data(problem_c);
+	 
+  /* Instantiate the other linear constraints (if any) and stack them 
+   * all into problem_c
+   */     
+  for (i = 2; i <= number_of_linear_constraints; ++i) {
+	 
+    /* Instantiate a new problem containing one linear constraint only */
+    problem_c2 = c_linear_single_cons_bbob_problem_allocate(function, 
+        dimension, instance, number_of_linear_constraints, i, factor1, 
+        problem_id_template, problem_name_template, NULL, 
+        feasible_direction);
+		
+    problem_c = coco_problem_stacked_allocate(problem_c, problem_c2,
+        problem_c2->smallest_values_of_interest, problem_c2->largest_values_of_interest);
+	 
+    /* Use the standard stacked problem_id as problem_name and 
+     * construct a new suite-specific problem_id 
+     */
+    coco_problem_set_name(problem_c, problem_c->problem_id);
+    coco_problem_set_id(problem_c, "bbob-constrained_f%02lu_i%02lu_d%02lu", 
+        (unsigned long)function, (unsigned long)instance, (unsigned long)dimension);
+
+    /* Construct problem type */
+    coco_problem_set_type(problem_c, "%s_%s", problem_c2->problem_type, 
+        problem_c2->problem_type);
+  }
+  
+  /* Exchange the first constraint position for another one if any */
+  problem_c = c_linear_shuffle(problem_c, data_c1);
+  
+  coco_free_memory(gradient_c1);
+  coco_random_free(random_generator);
+  
+  return problem_c;
+ 
+}
+
+#line 88 "code-experiments/src/suite_cons_bbob_problems.c"
+#line 89 "code-experiments/src/suite_cons_bbob_problems.c"
+#line 90 "code-experiments/src/suite_cons_bbob_problems.c"
+#line 91 "code-experiments/src/suite_cons_bbob_problems.c"
+#line 92 "code-experiments/src/suite_cons_bbob_problems.c"
+#line 93 "code-experiments/src/suite_cons_bbob_problems.c"
+#line 94 "code-experiments/src/suite_cons_bbob_problems.c"
+
+/**
+ * @brief Calculates the objective function type based on the value
+ *        of "function"
+ */
+static size_t obj_function_type(const size_t function) {
+  
+  size_t problems_per_obj_function_type = 6;
+  return (size_t)ceil((double)function/(double)problems_per_obj_function_type);
+  
+}
+
+/**
+ * @brief Returns the number of linear constraints associated to the
+ *        value of "function"
+ */
+static size_t nb_of_linear_constraints(const size_t function,
+                                       const size_t dimension) {
+  
+  int problems_per_obj_function_type = 6;
+  int p;
+  
+  /* Map "function" value into {1, ..., problems_per_obj_function_type} */
+  p = (((int)function - 1) % problems_per_obj_function_type) + 1;
+  
+  if (p == 1) return 1;
+  else if (p == 2) return 2;
+  else if (p == 3) return 6;
+  else if (p == 4) return 6 + dimension/2;
+  else if (p == 5) return 6 + dimension;
+  else return 6 + 3*dimension;
+  
+}
+
+/**
+ * @brief Objective function: sphere
+ *        Constraint(s): linear
+ */
+static coco_problem_t *f_sphere_c_linear_cons_bbob_problem_allocate(const size_t function,
+                                                      const size_t dimension,
+                                                      const size_t instance,
+                                                      const size_t number_of_linear_constraints,
+                                                      const long rseed,
+                                                      double *feasible_direction,
+                                                      const double *xopt,
+                                                      const char *problem_id_template,
+                                                      const char *problem_name_template) {
+                                                         		
+  size_t i;
+  coco_problem_t *problem = NULL;
+  coco_problem_t *problem_c = NULL;
+  
+  double feasible_direction_norm = 4.0;
+  
+  char *problem_type_temp = NULL;
+  double *all_zeros = NULL;  
+  
+  all_zeros = coco_allocate_vector(dimension);             
+  
+  for (i = 0; i < dimension; ++i)
+    all_zeros[i] = 0.0;    
+  
+  /* Create the objective function */
+  problem = f_sphere_bbob_problem_allocate(function, dimension, 
+      instance, rseed, problem_id_template, problem_name_template);
+	 
+  bbob_evaluate_gradient(problem, all_zeros, feasible_direction);	 
+  coco_scale_vector(feasible_direction, dimension, feasible_direction_norm);
+	 
+  /* Create the constraints. Use the gradient of the objective
+   * function at the origin to build the first constraint. 
+   */
+  problem_c = c_linear_cons_bbob_problem_allocate(function, 
+      dimension, instance, number_of_linear_constraints,
+      problem_id_template, problem_name_template, feasible_direction);
+	    
+  problem_type_temp = coco_strdup(problem->problem_type);
+  problem = coco_problem_stacked_allocate(problem, problem_c,
+      problem_c->smallest_values_of_interest, 
+      problem_c->largest_values_of_interest);
+	    
+  /* Define problem->best_parameter as the origin and store its
+   * objective function value into problem->best_value.
+   */
+  for (i = 0; i < dimension; ++i)
+    problem->best_parameter[i] = 0.0;
+  assert(problem->evaluate_function != NULL);
+  problem->evaluate_function(problem, problem->best_parameter, problem->best_value);
+  
+  /* To be sure that everything is correct, reset the f-evaluations
+   * and g-evaluations counters to zero.
+   */
+  problem->evaluations = 0;
+  problem->evaluations_constraints = 0;
+     
+  /* Apply a translation to the whole problem so that the constrained 
+   * minimum is no longer at the origin.
+   */
+  problem = transform_vars_shift(problem, xopt, 0);
+ 
+  /* Construct problem type */
+  coco_problem_set_type(problem, "%s_%s", problem_type_temp, 
+  problem_c->problem_type);
+ 
+  coco_free_memory(problem_type_temp);
+  coco_free_memory(all_zeros);
+	
+  return problem;
+ 
+}
+
+/**
+ * @brief Objective function: ellipsoid
+ *        Constraint(s): linear
+ */
+static coco_problem_t *f_ellipsoid_c_linear_cons_bbob_problem_allocate(const size_t function,
+                                                      const size_t dimension,
+                                                      const size_t instance,
+                                                      const size_t number_of_linear_constraints,
+                                                      const long rseed,
+                                                      double *feasible_direction,
+                                                      const double *xopt,
+                                                      const char *problem_id_template,
+                                                      const char *problem_name_template) {
+																			
+  size_t i;
+  coco_problem_t *problem = NULL;
+  coco_problem_t *problem_c = NULL;
+  
+  double feasible_direction_norm = 4.0;
+  
+  char *problem_type_temp = NULL;
+  double *all_zeros = NULL;
+  
+  all_zeros = coco_allocate_vector(dimension);
+ 
+  for (i = 0; i < dimension; ++i)
+    all_zeros[i] = 0.0;
+     
+  /* Create the objective function */
+  problem = f_ellipsoid_cons_bbob_problem_allocate(function, dimension, 
+      instance, rseed, problem_id_template, problem_name_template);
+
+  bbob_evaluate_gradient(problem, all_zeros, feasible_direction);
+  coco_scale_vector(feasible_direction, dimension, feasible_direction_norm);
+  
+  /* Create the constraints. Use the gradient of the objective
+   * function at the origin to build the first constraint. 
+   */
+  problem_c = c_linear_cons_bbob_problem_allocate(function, 
+      dimension, instance, number_of_linear_constraints,
+      problem_id_template, problem_name_template, feasible_direction);
+      
+  problem_type_temp = coco_strdup(problem->problem_type);
+  
+  /* Build the final constrained function by stacking the objective
+   * function and the constraints into one coco_problem_t type.
+   */
+  problem = coco_problem_stacked_allocate(problem, problem_c,
+      problem_c->smallest_values_of_interest, 
+      problem_c->largest_values_of_interest);
+  
+  /* Define problem->best_parameter as the origin and store its
+   * objective function value into problem->best_value.
+   */
+  for (i = 0; i < dimension; ++i)
+    problem->best_parameter[i] = 0.0;
+  assert(problem->evaluate_function != NULL);
+  problem->evaluate_function(problem, problem->best_parameter, problem->best_value);
+  
+  /* To be sure that everything is correct, reset the f-evaluations
+   * and g-evaluations counters to zero.
+   */
+  problem->evaluations = 0;
+  problem->evaluations_constraints = 0;
+
+  problem = transform_vars_oscillate(problem);
+     
+  /* Apply a translation to the whole problem so that the constrained 
+   * minimum is no longer at the origin.
+   */
+  problem = transform_vars_shift(problem, xopt, 0);
+ 
+  /* Construct problem type */
+  coco_problem_set_type(problem, "%s_%s", problem_type_temp, 
+  problem_c->problem_type);
+ 
+  coco_free_memory(problem_type_temp);
+  coco_free_memory(all_zeros);
+  
+  return problem;
+ 
+}
+
+/**
+ * @brief Objective function: rotated ellipsoid
+ *        Constraint(s): linear
+ */
+static coco_problem_t *f_ellipsoid_rotated_c_linear_cons_bbob_problem_allocate(const size_t function,
+                                                      const size_t dimension,
+                                                      const size_t instance,
+                                                      const size_t number_of_linear_constraints,
+                                                      const long rseed,
+                                                      double *feasible_direction,
+                                                      const double *xopt,
+                                                      const char *problem_id_template,
+                                                      const char *problem_name_template) {
+																			
+  size_t i;
+  coco_problem_t *problem = NULL;
+  coco_problem_t *problem_c = NULL;
+  
+  double feasible_direction_norm = 4.0;
+  
+  char *problem_type_temp = NULL;
+  double *all_zeros = NULL;
+  
+  all_zeros = coco_allocate_vector(dimension);
+ 
+  for (i = 0; i < dimension; ++i)
+    all_zeros[i] = 0.0;
+	 
+  /* Create the objective function */
+  problem = f_ellipsoid_rotated_cons_bbob_problem_allocate(function, dimension, 
+      instance, rseed, problem_id_template, problem_name_template);
+      
+  bbob_evaluate_gradient(problem, all_zeros, feasible_direction);
+  coco_scale_vector(feasible_direction, dimension, feasible_direction_norm);
+  
+  /* Create the constraints. Use the gradient of the objective
+   * function at the origin to build the first constraint. 
+   */
+  problem_c = c_linear_cons_bbob_problem_allocate(function, 
+      dimension, instance, number_of_linear_constraints,
+      problem_id_template, problem_name_template, feasible_direction);
+      
+  problem_type_temp = coco_strdup(problem->problem_type);
+  
+  /* Build the final constrained function by stacking the objective
+   * function and the constraints into one coco_problem_t type.
+   */
+  problem = coco_problem_stacked_allocate(problem, problem_c,
+      problem_c->smallest_values_of_interest, 
+      problem_c->largest_values_of_interest);
+     
+  /* Define problem->best_parameter as the origin and store its
+   * objective function value into problem->best_value.
+   */
+  for (i = 0; i < dimension; ++i)
+    problem->best_parameter[i] = 0.0;
+  assert(problem->evaluate_function != NULL);
+  problem->evaluate_function(problem, problem->best_parameter, problem->best_value);
+  
+  /* To be sure that everything is correct, reset the f-evaluations
+   * and g-evaluations counters to zero.
+   */
+  problem->evaluations = 0;
+  problem->evaluations_constraints = 0;
+  
+  problem = transform_vars_oscillate(problem);
+     
+  /* Apply a translation to the whole problem so that the constrained 
+   * minimum is no longer at the origin .
+   */
+  problem = transform_vars_shift(problem, xopt, 0);
+ 
+  /* Construct problem type */
+  coco_problem_set_type(problem, "%s_%s", problem_type_temp, 
+  problem_c->problem_type);
+ 
+  coco_free_memory(problem_type_temp);
+  coco_free_memory(all_zeros);
+  
+  return problem;
+ 
+}
+
+/**
+ * @brief Objective function: linear slope
+ *        Constraint(s): linear
+ */
+static coco_problem_t *f_linear_slope_c_linear_cons_bbob_problem_allocate(const size_t function,
+                                                      const size_t dimension,
+                                                      const size_t instance,
+                                                      const size_t number_of_linear_constraints,
+                                                      const long rseed,
+                                                      double *feasible_direction,
+                                                      const double *xopt,
+                                                      const char *problem_id_template,
+                                                      const char *problem_name_template) {
+																			
+  size_t i;
+  coco_problem_t *problem = NULL;
+  coco_problem_t *problem_c = NULL;
+  
+  double feasible_direction_norm = 4.0;
+  
+  char *problem_type_temp = NULL;
+  double *all_zeros = NULL;
+  
+  all_zeros = coco_allocate_vector(dimension);
+ 
+  for (i = 0; i < dimension; ++i)
+    all_zeros[i] = 0.0;
+	 
+  /* Create the objective function */
+  problem = f_linear_slope_bbob_problem_allocate(function, dimension, 
+      instance, rseed, problem_id_template, problem_name_template);
+      
+  bbob_evaluate_gradient(problem, all_zeros, feasible_direction);
+  coco_scale_vector(feasible_direction, dimension, feasible_direction_norm);
+  
+  /* Create the constraints. Use the gradient of the objective
+   * function at the origin to build the first constraint. 
+   */
+  problem_c = c_linear_cons_bbob_problem_allocate(function, 
+      dimension, instance, number_of_linear_constraints,
+      problem_id_template, problem_name_template, feasible_direction);
+      
+  problem_type_temp = coco_strdup(problem->problem_type);
+  
+  /* Build the final constrained function by stacking the objective
+   * function and the constraints into one coco_problem_t type.
+   */
+  problem = coco_problem_stacked_allocate(problem, problem_c,
+      problem_c->smallest_values_of_interest, 
+      problem_c->largest_values_of_interest);
+  
+  /* Define problem->best_parameter as the origin and store its
+   * objective function value into problem->best_value.
+   */
+  for (i = 0; i < dimension; ++i)
+    problem->best_parameter[i] = 0.0;
+  assert(problem->evaluate_function != NULL);
+  problem->evaluate_function(problem, problem->best_parameter, problem->best_value);
+  
+  /* To be sure that everything is correct, reset the f-evaluations
+   * and g-evaluations counters to zero.
+   */
+  problem->evaluations = 0;
+  problem->evaluations_constraints = 0;
+     
+  /* Apply a translation to the whole problem so that the constrained 
+   * minimum is no longer at the origin.
+   */
+  problem = transform_vars_shift(problem, xopt, 0);
+ 
+  /* Construct problem type */
+  coco_problem_set_type(problem, "%s_%s", problem_type_temp, 
+  problem_c->problem_type);
+ 
+  coco_free_memory(problem_type_temp);
+  coco_free_memory(all_zeros);
+  
+  return problem;
+ 
+}
+
+/**
+ * @brief Objective function: discus
+ *        Constraint(s): linear
+ */
+static coco_problem_t *f_discus_c_linear_cons_bbob_problem_allocate(const size_t function,
+                                                      const size_t dimension,
+                                                      const size_t instance,
+                                                      const size_t number_of_linear_constraints,
+                                                      const long rseed,
+                                                      double *feasible_direction,
+                                                      const double *xopt,
+                                                      const char *problem_id_template,
+                                                      const char *problem_name_template) {
+																			
+  size_t i;
+  coco_problem_t *problem = NULL;
+  coco_problem_t *problem_c = NULL;
+  
+  double feasible_direction_norm = 4.0;
+  
+  char *problem_type_temp = NULL;
+  double *all_zeros = NULL;
+  
+  all_zeros = coco_allocate_vector(dimension);
+ 
+  for (i = 0; i < dimension; ++i)
+    all_zeros[i] = 0.0;
+
+  /* Create the objective function */
+  problem = f_discus_cons_bbob_problem_allocate(function, dimension, 
+      instance, rseed, problem_id_template, problem_name_template);
+      
+  bbob_evaluate_gradient(problem, all_zeros, feasible_direction);
+  coco_scale_vector(feasible_direction, dimension, feasible_direction_norm);
+
+  /* Create the constraints. Use the gradient of the objective
+   * function at the origin to build the first constraint. 
+   */
+  problem_c = c_linear_cons_bbob_problem_allocate(function, 
+      dimension, instance, number_of_linear_constraints,
+      problem_id_template, problem_name_template, feasible_direction);
+      
+  problem_type_temp = coco_strdup(problem->problem_type);
+  
+  /* Build the final constrained function by stacking the objective
+   * function and the constraints into one coco_problem_t type.
+   */
+  problem = coco_problem_stacked_allocate(problem, problem_c,
+      problem_c->smallest_values_of_interest, 
+      problem_c->largest_values_of_interest);
+  
+  /* Define problem->best_parameter as the origin and store its
+   * objective function value into problem->best_value
+   */
+  for (i = 0; i < dimension; ++i)
+    problem->best_parameter[i] = 0.0;
+  assert(problem->evaluate_function != NULL);
+  problem->evaluate_function(problem, problem->best_parameter, problem->best_value);
+  
+  /* To be sure that everything is correct, reset the f-evaluations
+   * and g-evaluations counters to zero.
+   */
+  problem->evaluations = 0;
+  problem->evaluations_constraints = 0;
+     
+  problem = transform_vars_oscillate(problem);
+     
+  /* Apply a translation to the whole problem so that the constrained 
+   * minimum is no longer at the origin. 
+   */
+  problem = transform_vars_shift(problem, xopt, 0);
+ 
+  /* Construct problem type */
+  coco_problem_set_type(problem, "%s_%s", problem_type_temp, 
+  problem_c->problem_type);
+ 
+  coco_free_memory(problem_type_temp);
+  coco_free_memory(all_zeros);
+  
+  return problem;
+ 
+}
+
+/**
+ * @brief Objective function: bent cigar
+ *        Constraint(s): linear
+ */
+static coco_problem_t *f_bent_cigar_c_linear_cons_bbob_problem_allocate(const size_t function,
+                                                      const size_t dimension,
+                                                      const size_t instance,
+                                                      const size_t number_of_linear_constraints,
+                                                      const long rseed,
+                                                      double *feasible_direction,
+                                                      const double *xopt,
+                                                      const char *problem_id_template,
+                                                      const char *problem_name_template) {
+																			
+  size_t i;
+  coco_problem_t *problem = NULL;
+  coco_problem_t *problem_c = NULL;
+  
+  double feasible_direction_norm = 4.0;
+  
+  char *problem_type_temp = NULL;
+  double *all_zeros = NULL;
+  
+  all_zeros = coco_allocate_vector(dimension);
+ 
+  for (i = 0; i < dimension; ++i)
+    all_zeros[i] = 0.0;
+	 
+  /* Create the objective function */
+  problem = f_bent_cigar_cons_bbob_problem_allocate(function, dimension, 
+      instance, rseed, problem_id_template, problem_name_template);
+      
+  bbob_evaluate_gradient(problem, all_zeros, feasible_direction);
+  coco_scale_vector(feasible_direction, dimension, feasible_direction_norm);
+
+  /* Create the constraints. Use the gradient of the objective
+   * function at the origin to build the first constraint. 
+   */
+  problem_c = c_linear_cons_bbob_problem_allocate(function, 
+      dimension, instance, number_of_linear_constraints,
+      problem_id_template, problem_name_template, feasible_direction);
+      
+  problem_type_temp = coco_strdup(problem->problem_type);
+  
+  /* Build the final constrained function by stacking the objective
+   * function and the constraints into one coco_problem_t type.
+   */
+  problem = coco_problem_stacked_allocate(problem, problem_c,
+      problem_c->smallest_values_of_interest, 
+      problem_c->largest_values_of_interest);
+  
+  /* Define problem->best_parameter as the origin and store its
+   * objective function value into problem->best_value.
+   */
+  for (i = 0; i < dimension; ++i)
+    problem->best_parameter[i] = 0.0;
+  assert(problem->evaluate_function != NULL);
+  problem->evaluate_function(problem, problem->best_parameter, problem->best_value);
+  
+  /* To be sure that everything is correct, reset the f-evaluations
+   * and g-evaluations counters to zero.
+   */
+  problem->evaluations = 0;
+  problem->evaluations_constraints = 0;
+     
+  problem = transform_vars_asymmetric(problem, 0.2);
+     
+  /* Apply a translation to the whole problem so that the constrained 
+   * minimum is no longer at the origin. 
+   */
+  problem = transform_vars_shift(problem, xopt, 0);
+ 
+  /* Construct problem type */
+  coco_problem_set_type(problem, "%s_%s", problem_type_temp, 
+  problem_c->problem_type);
+ 
+  coco_free_memory(problem_type_temp);
+  coco_free_memory(all_zeros);
+  
+  return problem;
+ 
+}
+
+/**
+ * @brief Objective function: different powers
+ *        Constraint(s): linear
+ */
+static coco_problem_t *f_different_powers_c_linear_cons_bbob_problem_allocate(const size_t function,
+                                                      const size_t dimension,
+                                                      const size_t instance,
+                                                      const size_t number_of_linear_constraints,
+                                                      const long rseed,
+                                                      double *feasible_direction,
+                                                      const double *xopt,
+                                                      const char *problem_id_template,
+                                                      const char *problem_name_template) {
+																			
+  size_t i;
+  coco_problem_t *problem = NULL;
+  coco_problem_t *problem_c = NULL;
+  
+  double feasible_direction_norm = 4.0;
+  
+  char *problem_type_temp = NULL;
+  double *all_zeros = NULL;
+  
+  all_zeros = coco_allocate_vector(dimension);
+ 
+  for (i = 0; i < dimension; ++i)
+    all_zeros[i] = 0.0;
+	 
+  /* Create the objective function */
+  problem = f_different_powers_bbob_problem_allocate(function, dimension, 
+      instance, rseed, problem_id_template, problem_name_template);
+      
+  bbob_evaluate_gradient(problem, all_zeros, feasible_direction);
+  coco_scale_vector(feasible_direction, dimension, feasible_direction_norm);
+  
+  /* Create the constraints. Use the gradient of the objective
+   * function at the origin to build the first constraint. 
+   */
+  problem_c = c_linear_cons_bbob_problem_allocate(function, 
+      dimension, instance, number_of_linear_constraints,
+      problem_id_template, problem_name_template, feasible_direction);
+      
+  problem_type_temp = coco_strdup(problem->problem_type);
+  
+  /* Build the final constrained function by stacking the objective
+   * function and the constraints into one coco_problem_t type.
+   */
+  problem = coco_problem_stacked_allocate(problem, problem_c,
+      problem_c->smallest_values_of_interest, 
+      problem_c->largest_values_of_interest);
+  
+  /* Define problem->best_parameter as the origin and store its
+   * objective function value into problem->best_value.
+   */
+  for (i = 0; i < dimension; ++i)
+    problem->best_parameter[i] = 0.0;
+  assert(problem->evaluate_function != NULL);
+  problem->evaluate_function(problem, problem->best_parameter, problem->best_value);
+  
+  /* To be sure that everything is correct, reset the f-evaluations
+   * and g-evaluations counters to zero.
+   */
+  problem->evaluations = 0;
+  problem->evaluations_constraints = 0;
+     
+  /* Apply a translation to the whole problem so that the constrained 
+   * minimum is no longer at the origin.
+   */
+  problem = transform_vars_shift(problem, xopt, 0);
+ 
+  /* Construct problem type */
+  coco_problem_set_type(problem, "%s_%s", problem_type_temp, 
+  problem_c->problem_type);
+ 
+  coco_free_memory(problem_type_temp);
+  coco_free_memory(all_zeros);
+  
+  return problem;
+ 
+}
+
+/**
+ * @brief Objective function: rastrigin
+ *        Constraint(s): linear
+ */
+static coco_problem_t *f_rastrigin_c_linear_cons_bbob_problem_allocate(const size_t function,
+                                                      const size_t dimension,
+                                                      const size_t instance,
+                                                      const size_t number_of_linear_constraints,
+                                                      const long rseed,
+                                                      double *feasible_direction,
+                                                      const double *xopt,
+                                                      const char *problem_id_template,
+                                                      const char *problem_name_template) {
+																			
+  size_t i;
+  coco_problem_t *problem = NULL;
+  coco_problem_t *problem_c = NULL;
+  
+  double feasible_direction_norm = 4.0;
+  
+  char *problem_type_temp = NULL;
+	 
+  coco_random_state_t *rand_state = coco_random_new((uint32_t) rseed);
+
+  /* Create the objective function */
+  problem = f_rastrigin_cons_bbob_problem_allocate(function, dimension, 
+      instance, rseed, problem_id_template, problem_name_template);
+  
+  /* Define the feasible_direction and, consequently, the initial
+   * solution provided by the testbed as a point in (1,2)^n. This avoids
+   * providing a local optimal solution (such as all-ones) as initial 
+   * solution to the user. Otherwise, algorithms that look for local 
+   * optima would stop at iteration 1 if they used such an initial
+   * solution.
+   */
+  for (i = 0; i < dimension; ++i)
+    feasible_direction[i] = feasible_direction_norm + coco_random_uniform(rand_state);
+
+  coco_random_free(rand_state);
+     
+  /* Create the constraints. Use the feasible direction above
+   * to build the first constraint. 
+   */
+  problem_c = c_linear_cons_bbob_problem_allocate(function,
+      dimension, instance, number_of_linear_constraints,
+      problem_id_template, problem_name_template, feasible_direction);
+      
+  problem_type_temp = coco_strdup(problem->problem_type);
+  
+  /* Build the final constrained function by stacking the objective
+   * function and the constraints into one coco_problem_t type.
+   */
+  problem = coco_problem_stacked_allocate(problem, problem_c,
+      problem_c->smallest_values_of_interest, 
+      problem_c->largest_values_of_interest);
+  
+  /* Define problem->best_parameter as the origin and store its
+   * objective function value into problem->best_value.
+   */
+  for (i = 0; i < dimension; ++i)
+    problem->best_parameter[i] = 0.0;
+  assert(problem->evaluate_function != NULL);
+  problem->evaluate_function(problem, problem->best_parameter, problem->best_value);
+  
+  /* To be sure that everything is correct, reset the f-evaluations
+   * and g-evaluations counters to zero.
+   */
+  problem->evaluations = 0;
+  problem->evaluations_constraints = 0;
+  
+  problem = transform_vars_asymmetric(problem, 0.2);
+  problem = transform_vars_oscillate(problem);
+  
+  /* Apply a translation to the whole problem so that the constrained 
+   * minimum is no longer at the origin. 
+   */
+  problem = transform_vars_shift(problem, xopt, 0);
+ 
+  /* Construct problem type */
+  coco_problem_set_type(problem, "%s_%s", problem_type_temp, 
+  problem_c->problem_type);
+ 
+  coco_free_memory(problem_type_temp);
+  
+  return problem;
+ 
+}
+#line 10 "code-experiments/src/suite_cons_bbob.c"
+
+static coco_suite_t *coco_suite_allocate(const char *suite_name,
+                                         const size_t number_of_functions,
+                                         const size_t number_of_dimensions,
+                                         const size_t *dimensions,
+                                         const char *default_instances);
+
+/**
+ * @brief Sets the dimensions and default instances for the bbob suite.
+ */
+static coco_suite_t *suite_cons_bbob_initialize(void) {
+
+  coco_suite_t *suite;
+  const size_t dimensions[] = { 2, 3, 5, 10, 20, 40 };
+
+  /* IMPORTANT: Make sure to change the default instance for every new workshop! */
+  suite = coco_suite_allocate("bbob-constrained", 48, 6, dimensions, "year: 2016");
+
+  return suite;
+}
+
+/**
+ * @brief Sets the instances associated with years for the constrained
+ *        bbob suite.
+ */
+static const char *suite_cons_bbob_get_instances_by_year(const int year) {
+
+  if ((year == 2016) || (year == 0)) {
+    return "1-15";
+  }
+  else {
+    coco_error("suite_cons_bbob_get_instances_by_year(): year %d not defined for suite_cons_bbob", year);
+    return NULL;
+  }
+}
+
+/**
+ * @brief Creates and returns a constrained BBOB problem.
+ */
+static coco_problem_t *coco_get_cons_bbob_problem(const size_t function,
+                                                  const size_t dimension,
+                                                  const size_t instance) {
+  
+  size_t number_of_linear_constraints; 
+  coco_problem_t *problem = NULL;
+  
+  double *feasible_direction = coco_allocate_vector(dimension);  
+  double *xopt = coco_allocate_vector(dimension);  
+  
+  const char *problem_id_template = "bbob-constrained_f%03lu_i%02lu_d%02lu";
+  const char *problem_name_template = "bbob-constrained suite problem f%lu instance %lu in %luD";
+  
+  /* Seed value used for shifting the whole constrained problem */
+  long rseed = (long) (function + 10000 * instance);
+  bbob2009_compute_xopt(xopt, rseed, dimension);
+  
+  /* Choose a different seed value for building the objective function */
+  rseed = (long) (function + 20000 * instance);
+  
+  number_of_linear_constraints = nb_of_linear_constraints(function, dimension);
+  
+  if (obj_function_type(function) == 1) {
+	  
+    problem = f_sphere_c_linear_cons_bbob_problem_allocate(function, 
+        dimension, instance, number_of_linear_constraints, rseed,
+        feasible_direction, xopt, problem_id_template, 
+        problem_name_template);
+	 
+  } else if (obj_function_type(function) == 2) {
+	  
+    problem = f_ellipsoid_c_linear_cons_bbob_problem_allocate(function, 
+        dimension, instance, number_of_linear_constraints, rseed,
+        feasible_direction, xopt, problem_id_template, 
+        problem_name_template);
+	  
+  } else if (obj_function_type(function) == 3) {
+	  
+    problem = f_linear_slope_c_linear_cons_bbob_problem_allocate(function, 
+        dimension, instance, number_of_linear_constraints, rseed,
+        feasible_direction, xopt, problem_id_template, 
+        problem_name_template);
+	  
+  } else if (obj_function_type(function) == 4) {
+	  
+    problem = f_ellipsoid_rotated_c_linear_cons_bbob_problem_allocate(function, 
+        dimension, instance, number_of_linear_constraints, rseed,
+        feasible_direction, xopt, problem_id_template, 
+        problem_name_template);
+	  
+  } else if (obj_function_type(function) == 5) {
+	  
+    problem = f_discus_c_linear_cons_bbob_problem_allocate(function, 
+        dimension, instance, number_of_linear_constraints, rseed,
+        feasible_direction, xopt, problem_id_template, 
+        problem_name_template);
+	  
+  } else if (obj_function_type(function) == 6) {
+	  
+    problem = f_bent_cigar_c_linear_cons_bbob_problem_allocate(function, 
+        dimension, instance, number_of_linear_constraints, rseed,
+        feasible_direction, xopt, problem_id_template, 
+        problem_name_template);
+	  
+  } else if (obj_function_type(function) == 7) {
+	  
+    problem = f_different_powers_c_linear_cons_bbob_problem_allocate(function, 
+        dimension, instance, number_of_linear_constraints, rseed,
+        feasible_direction, xopt, problem_id_template, 
+        problem_name_template);
+	  
+  } else if (obj_function_type(function) == 8) {
+	  
+    problem = f_rastrigin_c_linear_cons_bbob_problem_allocate(function, 
+        dimension, instance, number_of_linear_constraints, rseed,
+        feasible_direction, xopt, problem_id_template, 
+        problem_name_template);
+	  
+  } else {
+    coco_error("get_cons_bbob_problem(): cannot retrieve problem f%lu instance %lu in %luD", 
+        function, instance, dimension);
+    coco_free_memory(xopt);
+    coco_free_memory(feasible_direction);
+    return NULL; /* Never reached */
+  }
+  
+  coco_free_memory(xopt);
+  coco_free_memory(feasible_direction);
+  
+  return problem;
+}
+
+/**
+ * @brief Returns the problem from the constrained bbob suite that 
+ *        corresponds to the given parameters.
+ *
+ * @param suite The COCO suite.
+ * @param function_idx Index of the function (starting from 0).
+ * @param dimension_idx Index of the dimension (starting from 0).
+ * @param instance_idx Index of the instance (starting from 0).
+ * @return The problem that corresponds to the given parameters.
+ */
+static coco_problem_t *suite_cons_bbob_get_problem(coco_suite_t *suite,
+                                                   const size_t function_idx,
+                                                   const size_t dimension_idx,
+                                                   const size_t instance_idx) {
+  
   coco_problem_t *problem = NULL;
 
   const size_t function = suite->functions[function_idx];
   const size_t dimension = suite->dimensions[dimension_idx];
   const size_t instance = suite->instances[instance_idx];
 
-  problem = coco_get_largescale_problem(function, dimension, instance);
+  problem = coco_get_cons_bbob_problem(function, dimension, instance);
 
   problem->suite_dep_function = function;
   problem->suite_dep_instance = instance;
   problem->suite_dep_index = coco_suite_encode_problem_index(suite, function_idx, dimension_idx, instance_idx);
-
+  
+  /* Use the standard stacked problem_id as problem_name and 
+   * construct a new suite-specific problem_id 
+   */
+  coco_problem_set_name(problem, problem->problem_id);
+  coco_problem_set_id(problem, "bbob-constrained_f%02lu_i%02lu_d%02lu", 
+  (unsigned long)function, (unsigned long)instance, (unsigned long)dimension);
+  
   return problem;
 }
-#line 23 "code-experiments/src/coco_suite.c"
+#line 24 "code-experiments/src/coco_suite.c"
 
 /** @brief The maximum number of different instances in a suite. */
 #define COCO_MAX_INSTANCES 1000
@@ -17236,6 +19620,8 @@ static coco_suite_t *coco_suite_intialize(const char *suite_name) {
     suite = suite_biobj_ext_initialize();
   } else if (strcmp(suite_name, "bbob-largescale") == 0) {
     suite = suite_largescale_initialize();
+  } else if (strcmp(suite_name, "bbob-constrained") == 0) {
+    suite = suite_cons_bbob_initialize();
   }
   else {
     coco_error("coco_suite_intialize(): unknown problem suite");
@@ -17259,6 +19645,8 @@ static const char *coco_suite_get_instances_by_year(const coco_suite_t *suite, c
     year_string = suite_biobj_get_instances_by_year(year);
   } else if (strcmp(suite->suite_name, "bbob-biobj-ext") == 0) {
     year_string = suite_biobj_ext_get_instances_by_year(year);
+  } else if (strcmp(suite->suite_name, "bbob-constrained") == 0) {
+    year_string = suite_cons_bbob_get_instances_by_year(year);
   } else {
     coco_error("coco_suite_get_instances_by_year(): suite '%s' has no years defined", suite->suite_name);
     return NULL;
@@ -17280,7 +19668,7 @@ static coco_problem_t *coco_suite_get_problem_from_indices(coco_suite_t *suite,
                                                            const size_t instance_idx) {
 
   coco_problem_t *problem;
-
+  
   if ((suite->functions[function_idx] == 0) ||
       (suite->dimensions[dimension_idx] == 0) ||
 	  (suite->instances[instance_idx] == 0)) {
@@ -17297,6 +19685,8 @@ static coco_problem_t *coco_suite_get_problem_from_indices(coco_suite_t *suite,
     problem = suite_biobj_ext_get_problem(suite, function_idx, dimension_idx, instance_idx);
   } else if (strcmp(suite->suite_name, "bbob-largescale") == 0) {
     problem = suite_largescale_get_problem(suite, function_idx, dimension_idx, instance_idx);
+  } else if (strcmp(suite->suite_name, "bbob-constrained") == 0) {
+    problem = suite_cons_bbob_get_problem(suite, function_idx, dimension_idx, instance_idx);
   } else {
     coco_error("coco_suite_get_problem_from_indices(): unknown problem suite");
     return NULL;
@@ -17746,16 +20136,19 @@ static int coco_suite_is_next_dimension_found(coco_suite_t *suite) {
 }
 
 /**
- * Currently, five suites are supported:
+ * Currently, six suites are supported:
  * - "bbob" contains 24 <a href="http://coco.lri.fr/downloads/download15.03/bbobdocfunctions.pdf">
  * single-objective functions</a> in 6 dimensions (2, 3, 5, 10, 20, 40)
  * - "bbob-biobj" contains 55 <a href="http://numbbo.github.io/coco-doc/bbob-biobj/functions">bi-objective
  * functions</a> in 6 dimensions (2, 3, 5, 10, 20, 40)
  * - "bbob-biobj-ext" as an extension of "bbob-biobj" contains 92
- * <a href="http://numbbo.github.io/coco-doc/bbob-biobj/functions">bi-objective functions</a> in 6 dimensions
+ * <a href="http://numbbo.github.io/coco-doc/bbob-biobj/functions">bi-objective functions</a> in 6 dimensions 
  * (2, 3, 5, 10, 20, 40)
  * - "bbob-largescale" contains 24 <a href="http://coco.lri.fr/downloads/download15.03/bbobdocfunctions.pdf">
  * single-objective functions</a> in 6 large dimensions (40, 80, 160, 320, 640, 1280)
+ * - "bbob-constrained" contains 48 linearly-constrained problems, which are combinations of 8 single 
+ * objective functions with 6 different numbers of linear constraints (1, 2, 10, dimension/2, dimension-1, 
+ * dimension+1), in 6 dimensions (2, 3, 5, 10, 20, 40).
  * - "toy" contains 6 <a href="http://coco.lri.fr/downloads/download15.03/bbobdocfunctions.pdf">
  * single-objective functions</a> in 5 dimensions (2, 3, 5, 10, 20)
  *
@@ -17764,7 +20157,7 @@ static int coco_suite_is_next_dimension_found(coco_suite_t *suite) {
  * and the suite is not filtered by default).
  *
  * @param suite_name A string containing the name of the suite. Currently supported suite names are "bbob",
- * "bbob-biobj", "bbob-biobj-ext", "bbob-largescale" and "toy".
+ * "bbob-biobj", "bbob-biobj-ext", "bbob-largescale", "bbob-constrained", and "toy".
  * @param suite_instance A string used for defining the suite instances. Two ways are supported:
  * - "year: YEAR", where YEAR is the year of the BBOB workshop, includes the instances (to be) used in that
  * year's workshop;
@@ -17842,7 +20235,7 @@ coco_suite_t *coco_suite(const char *suite_name, const char *suite_instance, con
 
   /* Apply filter if any given by the suite_options */
   if ((suite_options) && (strlen(suite_options) > 0)) {
-    option_string = coco_allocate_string(COCO_PATH_MAX);
+    option_string = coco_allocate_string(COCO_PATH_MAX + 1);
     if (coco_options_read_values(suite_options, "function_indices", option_string) > 0) {
       indices = coco_string_parse_ranges(option_string, 1, suite->number_of_functions, "function_indices", COCO_MAX_INSTANCES);
       if (indices != NULL) {
@@ -17852,7 +20245,7 @@ coco_suite_t *coco_suite(const char *suite_name, const char *suite_instance, con
     }
     coco_free_memory(option_string);
 
-    option_string = coco_allocate_string(COCO_PATH_MAX);
+    option_string = coco_allocate_string(COCO_PATH_MAX + 1);
     if (coco_options_read_values(suite_options, "instance_indices", option_string) > 0) {
       indices = coco_string_parse_ranges(option_string, 1, suite->number_of_instances, "instance_indices", COCO_MAX_INSTANCES);
       if (indices != NULL) {
@@ -17876,7 +20269,7 @@ coco_suite_t *coco_suite(const char *suite_name, const char *suite_instance, con
       }
     }
 
-    option_string = coco_allocate_string(COCO_PATH_MAX);
+    option_string = coco_allocate_string(COCO_PATH_MAX + 1);
     if ((dim_idx_found >= 0) && (parce_dim_idx == 1)
         && (coco_options_read_values(suite_options, "dimension_indices", option_string) > 0)) {
       indices = coco_string_parse_ranges(option_string, 1, suite->number_of_dimensions, "dimension_indices",
@@ -17888,7 +20281,7 @@ coco_suite_t *coco_suite(const char *suite_name, const char *suite_instance, con
     }
     coco_free_memory(option_string);
 
-    option_string = coco_allocate_string(COCO_PATH_MAX);
+    option_string = coco_allocate_string(COCO_PATH_MAX + 1);
     if ((dim_found >= 0) && (parce_dim == 1)
         && (coco_options_read_values(suite_options, "dimensions", option_string) > 0)) {
       ptr = option_string;
@@ -17962,7 +20355,7 @@ coco_suite_t *coco_suite(const char *suite_name, const char *suite_instance, con
  * @returns The next problem of the suite or NULL if there is no next problem left.
  */
 coco_problem_t *coco_suite_get_next_problem(coco_suite_t *suite, coco_observer_t *observer) {
-
+  
   size_t function_idx;
   size_t dimension_idx;
   size_t instance_idx;
@@ -17987,7 +20380,7 @@ coco_problem_t *coco_suite_get_next_problem(coco_suite_t *suite, coco_observer_t
     coco_info_partial("done\n");
     return NULL;
   }
-
+ 
   if (suite->current_problem) {
     coco_problem_free(suite->current_problem);
   }
@@ -18171,7 +20564,6 @@ static int coco_observer_targets_trigger(coco_observer_targets_t *targets, const
   const double number_of_targets_double = (double) (long) targets->number_of_triggers;
 
   double verified_value = 0;
-  int last_exponent = 0;
   int current_exponent = 0;
   int adjusted_exponent = 0;
 
@@ -18192,15 +20584,7 @@ static int coco_observer_targets_trigger(coco_observer_targets_t *targets, const
 
     current_exponent = (int) (ceil(log10(verified_value) * number_of_targets_double));
 
-    /* If this is the first time the update was called, set the last_exponent to some value greater than the
-     * current exponent */
-    if (last_exponent == INT_MAX) {
-      last_exponent = current_exponent + 1;
-    } else {
-      last_exponent = targets->exponent;
-    }
-
-    if (current_exponent < last_exponent) {
+    if (current_exponent < targets->exponent) {
       /* Update the target information */
       targets->exponent = current_exponent;
       if (given_value == 0)
@@ -18223,21 +20607,13 @@ static int coco_observer_targets_trigger(coco_observer_targets_t *targets, const
     /* Adjustment: use floor instead of ceil! */
     current_exponent = (int) (floor(log10(verified_value) * number_of_targets_double));
 
-    /* If this is the first time the update was called, set the last_exponent to some value greater than the
-     * current exponent */
-    if (last_exponent == INT_MAX) {
-      last_exponent = current_exponent + 1;
-    } else {
-      last_exponent = targets->exponent;
-    }
-
     /* Compute the adjusted_exponent in such a way, that it is always diminishing in value. The adjusted
      * exponent can only be used to verify if a new target has been hit. To compute the actual target
      * value, the current_exponent needs to be used. */
     adjusted_exponent = 2 * (int) (ceil(log10(targets->precision / 10.0) * number_of_targets_double))
         - current_exponent - 1;
 
-    if (adjusted_exponent < last_exponent) {
+    if (adjusted_exponent < targets->exponent) {
       /* Update the target information */
       targets->exponent = adjusted_exponent;
       targets->value = - pow(10, (double) current_exponent / number_of_targets_double);
@@ -18307,7 +20683,7 @@ static int coco_observer_evaluations_trigger_first(coco_observer_evaluations_t *
 
   assert(evaluations != NULL);
 
-  if (evaluation_number == evaluations->value1) {
+  if (evaluation_number >= evaluations->value1) {
     /* Compute the next value for the first trigger */
     while (coco_double_to_size_t(floor(pow(10, (double) evaluations->exponent1 / (double) evaluations->number_of_triggers)) <= evaluations->value1)) {
       evaluations->exponent1++;
@@ -18330,7 +20706,7 @@ static int coco_observer_evaluations_trigger_second(coco_observer_evaluations_t 
 
   assert(evaluations != NULL);
 
-  if (evaluation_number == evaluations->value2) {
+  if (evaluation_number >= evaluations->value2) {
     /* Compute the next value for the second trigger */
     if (evaluations->base_index < evaluations->base_count - 1) {
       evaluations->base_index++;
@@ -18510,12 +20886,16 @@ static void observer_bbob(coco_observer_t *observer, const char *options, coco_o
 }
 #line 28 "code-experiments/src/logger_bbob.c"
 
+static const double fvalue_logged_for_infinite = 3e21;   /* value used for logging try */
+static const double fvalue_logged_for_nan = 2e21;
+static const double fvalue_logged_for_infeasible = 1e21; /* only in first evaluation */
+
 /*static const size_t bbob_nbpts_nbevals = 20; Wassim: tentative, are now observer options with these default values*/
 /*static const size_t bbob_nbpts_fval = 5;*/
 static size_t bbob_current_dim = 0;
 static size_t bbob_current_funId = 0;
 static size_t bbob_infoFile_firstInstance = 0;
-char bbob_infoFile_firstInstance_char[3];
+char *bbob_infoFile_firstInstance_char;
 /* a possible solution: have a list of dims that are already in the file, if the ones we're about to log
  * is != bbob_current_dim and the funId is currend_funId, create a new .info file with as suffix the
  * number of the first instance */
@@ -18547,9 +20927,10 @@ typedef struct {
   FILE *tdata_file; /* number of function evaluations aligned data file */
   FILE *rdata_file; /* restart info data file */
   size_t number_of_evaluations;
+  size_t number_of_evaluations_constraints;
   double best_fvalue;
   double last_fvalue;
-  short written_last_eval; /* allows writing the the data of the final fun eval in the .tdat file if not already written by the t_trigger*/
+  short written_last_eval; /* allows writing the data of the final fun eval in the .tdat file if not already written by the t_trigger*/
   double *best_solution;
   /* The following are to only pass data as a parameter in the free function. The
    * interface should probably be the same for all free functions so passing the
@@ -18559,25 +20940,40 @@ typedef struct {
   size_t instance_id;
   size_t number_of_variables;
   double optimal_fvalue;
+  char *suite_name;
 
   coco_observer_targets_t *targets;          /**< @brief Triggers based on target values. */
   coco_observer_evaluations_t *evaluations;  /**< @brief Triggers based on the number of evaluations. */
 
 } logger_bbob_data_t;
 
-static const char *bbob_file_header_str = "%% function evaluation | "
-    "noise-free fitness - Fopt (%13.12e) | "
+/* was:
+ * function evaluation | 
+ * noise-free fitness - Fopt (7.948000000000e+01) | 
+ * best noise-free fitness - Fopt | 
+ * measured fitness | 
+ * best measured fitness | 
+ * x1 | x2...
+ */
+static const char *bbob_file_header_str = "%% "
+    "f evaluations | "
+    "g evaluations | "
     "best noise-free fitness - Fopt | "
+    "noise-free fitness - Fopt (%13.12e) | "
     "measured fitness | "
     "best measured fitness | "
     "x1 | "
     "x2...\n";
 
+static const char *logger_name = "bbob";
+static const char *data_format = "bbob-new"; /* or whatever we agree upon, bbob or bbob2 or bbob-constrained may be alternatives */
+
 /**
  * adds a formated line to a data file
  */
 static void logger_bbob_write_data(FILE *target_file,
-                                   size_t number_of_evaluations,
+                                   size_t number_of_f_evaluations,
+                                   size_t number_of_cons_evaluations,
                                    double fvalue,
                                    double best_fvalue,
                                    double best_value,
@@ -18586,8 +20982,13 @@ static void logger_bbob_write_data(FILE *target_file,
   /* for some reason, it's %.0f in the old code instead of the 10.9e
    * in the documentation
    */
-  fprintf(target_file, "%lu %+10.9e %+10.9e %+10.9e %+10.9e", (unsigned long) number_of_evaluations,
-  		fvalue - best_value, best_fvalue - best_value, fvalue, best_fvalue);
+  fprintf(target_file, "%lu %lu %+10.9e %+10.9e %+10.9e %+10.9e",
+          (unsigned long) number_of_f_evaluations,
+    	  (unsigned long) number_of_cons_evaluations,
+          best_fvalue - best_value,
+          fvalue - best_value,
+    	  fvalue,
+          best_fvalue);
   if (number_of_variables < 22) {
     size_t i;
     for (i = 0; i < number_of_variables; i++) {
@@ -18619,8 +21020,8 @@ static void logger_bbob_open_dataFile(FILE **target_file,
                                       const char *path,
                                       const char *dataFile_path,
                                       const char *file_extension) {
-  char file_path[COCO_PATH_MAX] = { 0 };
-  char relative_filePath[COCO_PATH_MAX] = { 0 };
+  char file_path[COCO_PATH_MAX + 2] = { 0 };
+  char relative_filePath[COCO_PATH_MAX + 2] = { 0 };
   int errnum;
   strncpy(relative_filePath, dataFile_path,
   COCO_PATH_MAX - strlen(relative_filePath) - 1);
@@ -18641,8 +21042,8 @@ static void logger_bbob_open_dataFile(FILE **target_file,
                                       const char *path,
                                       const char *dataFile_path,
                                       const char *file_extension) {
-  char file_path[COCO_PATH_MAX] = { 0 };
-  char relative_filePath[COCO_PATH_MAX] = { 0 };
+  char file_path[COCO_PATH_MAX + 2] = { 0 };
+  char relative_filePath[COCO_PATH_MAX + 2] = { 0 };
   int errnum;
   strncpy(relative_filePath, dataFile_path,
   COCO_PATH_MAX - strlen(relative_filePath) - 1);
@@ -18669,19 +21070,19 @@ static void logger_bbob_openIndexFile(logger_bbob_data_t *logger,
                                       const char *dataFile_path,
                                       const char *suite_name) {
   /* to add the instance number TODO: this should be done outside to avoid redoing this for the .*dat files */
-  char used_dataFile_path[COCO_PATH_MAX] = { 0 };
+  char used_dataFile_path[COCO_PATH_MAX + 2] = { 0 };
   int errnum, newLine; /* newLine is at 1 if we need a new line in the info file */
-  char function_id_char[3]; /* TODO: consider adding them to logger */
-  char file_name[COCO_PATH_MAX] = { 0 };
-  char file_path[COCO_PATH_MAX] = { 0 };
+  char *function_id_char; /* TODO: consider adding them to logger */
+  char file_name[COCO_PATH_MAX + 2] = { 0 };
+  char file_path[COCO_PATH_MAX + 2] = { 0 };
   FILE **target_file;
   FILE *tmp_file;
   strncpy(used_dataFile_path, dataFile_path, COCO_PATH_MAX - strlen(used_dataFile_path) - 1);
   if (bbob_infoFile_firstInstance == 0) {
     bbob_infoFile_firstInstance = logger->instance_id;
   }
-  sprintf(function_id_char, "%lu", (unsigned long) logger->function_id);
-  sprintf(bbob_infoFile_firstInstance_char, "%lu", (unsigned long) bbob_infoFile_firstInstance);
+  function_id_char = coco_strdupf("%lu", (unsigned long) logger->function_id);
+  bbob_infoFile_firstInstance_char = coco_strdupf("%lu", (unsigned long) bbob_infoFile_firstInstance);
   target_file = &(logger->index_file);
   tmp_file = NULL; /* to check whether the file already exists. Don't want to use target_file */
   strncpy(file_name, indexFile_prefix, COCO_PATH_MAX - strlen(file_name) - 1);
@@ -18721,11 +21122,12 @@ static void logger_bbob_openIndexFile(logger_bbob_data_t *logger,
             newLine = 0;
             file_path[strlen(file_path) - strlen(bbob_infoFile_firstInstance_char) - 7] = 0; /* truncate the instance part */
             bbob_infoFile_firstInstance = logger->instance_id;
-            sprintf(bbob_infoFile_firstInstance_char, "%lu", (unsigned long) bbob_infoFile_firstInstance);
+            coco_free_memory(bbob_infoFile_firstInstance_char);
+            bbob_infoFile_firstInstance_char = coco_strdupf("%lu", (unsigned long) bbob_infoFile_firstInstance);
             strncat(file_path, "_i", COCO_PATH_MAX - strlen(file_name) - 1);
             strncat(file_path, bbob_infoFile_firstInstance_char, COCO_PATH_MAX - strlen(file_name) - 1);
             strncat(file_path, ".info", COCO_PATH_MAX - strlen(file_name) - 1);
-          } else {/*we have all dimensions*/
+          } else { /* we have all dimensions */
             newLine = 1;
           }
           for (j = 0; j < bbob_number_of_dimensions; j++) { /* new info file, reinitialize list of dims */
@@ -18750,11 +21152,17 @@ static void logger_bbob_openIndexFile(logger_bbob_data_t *logger,
         }
         fclose(tmp_file);
       }
-
+      /* data_format = coco_strdup("bbob-constrained"); */
       fprintf(*target_file,
-          "suite = '%s', funcId = %d, DIM = %lu, Precision = %.3e, algId = '%s', coco_version = '%s'\n",
-          suite_name, (int) strtol(function_id, NULL, 10), (unsigned long) logger->number_of_variables,
-          pow(10, -8), logger->observer->algorithm_name, coco_version);
+              "suite = '%s', funcId = %d, DIM = %lu, Precision = %.3e, algId = '%s', coco_version = '%s', logger = '%s', data_format = '%s'\n",
+              suite_name,
+              (int) strtol(function_id, NULL, 10),
+              (unsigned long) logger->number_of_variables,
+              pow(10, -8),
+              logger->observer->algorithm_name,
+              coco_version,
+              logger_name,
+              data_format);
 
       fprintf(*target_file, "%%\n");
       strncat(used_dataFile_path, "_i", COCO_PATH_MAX - strlen(used_dataFile_path) - 1);
@@ -18765,6 +21173,7 @@ static void logger_bbob_openIndexFile(logger_bbob_data_t *logger,
       bbob_current_funId = logger->function_id;
     }
   }
+  coco_free_memory(function_id_char);
 }
 
 /**
@@ -18775,24 +21184,18 @@ static void logger_bbob_initialize(logger_bbob_data_t *logger, coco_problem_t *i
   /*
    Creates/opens the data and index files
    */
-  char dataFile_path[COCO_PATH_MAX] = { 0 }; /* relative path to the .dat file from where the .info file is */
-  char folder_path[COCO_PATH_MAX] = { 0 };
+  char dataFile_path[COCO_PATH_MAX + 2] = { 0 }; /* relative path to the .dat file from where the .info file is */
+  char folder_path[COCO_PATH_MAX + 2] = { 0 };
   char *tmpc_funId; /* serves to extract the function id as a char *. There should be a better way of doing this! */
   char *tmpc_dim; /* serves to extract the dimension as a char *. There should be a better way of doing this! */
   char indexFile_prefix[10] = "bbobexp"; /* TODO (minor): make the prefix bbobexp a parameter that the user can modify */
-  size_t str_length_funId, str_length_dim;
-
-  str_length_funId = coco_double_to_size_t(bbob2009_fmax(1, ceil(log10((double) coco_problem_get_suite_dep_function(inner_problem)))));
-  str_length_dim = coco_double_to_size_t(bbob2009_fmax(1, ceil(log10((double) inner_problem->number_of_variables))));
-  tmpc_funId = coco_allocate_string(str_length_funId);
-  tmpc_dim = coco_allocate_string(str_length_dim);
-
+  
   assert(logger != NULL);
   assert(inner_problem != NULL);
   assert(inner_problem->problem_id != NULL);
 
-  sprintf(tmpc_funId, "%lu", (unsigned long) coco_problem_get_suite_dep_function(inner_problem));
-  sprintf(tmpc_dim, "%lu", (unsigned long) inner_problem->number_of_variables);
+  tmpc_funId = coco_strdupf("%lu", (unsigned long) coco_problem_get_suite_dep_function(inner_problem));
+  tmpc_dim = coco_strdupf("%lu", (unsigned long) inner_problem->number_of_variables);
 
   /* prepare paths and names */
   strncpy(dataFile_path, "data_f", COCO_PATH_MAX);
@@ -18818,6 +21221,7 @@ static void logger_bbob_initialize(logger_bbob_data_t *logger, coco_problem_t *i
   strncat(dataFile_path, "_i", COCO_PATH_MAX - strlen(dataFile_path) - 1);
   strncat(dataFile_path, bbob_infoFile_firstInstance_char,
   COCO_PATH_MAX - strlen(dataFile_path) - 1);
+  
   logger_bbob_open_dataFile(&(logger->fdata_file), logger->observer->result_folder, dataFile_path, ".dat");
   fprintf(logger->fdata_file, bbob_file_header_str, logger->optimal_fvalue);
 
@@ -18829,16 +21233,19 @@ static void logger_bbob_initialize(logger_bbob_data_t *logger, coco_problem_t *i
   logger->is_initialized = 1;
   coco_free_memory(tmpc_dim);
   coco_free_memory(tmpc_funId);
+  coco_free_memory(bbob_infoFile_firstInstance_char);
 }
 
 /**
  * Layer added to the transformed-problem evaluate_function by the logger
  */
 static void logger_bbob_evaluate(coco_problem_t *problem, const double *x, double *y) {
-  logger_bbob_data_t *logger = (logger_bbob_data_t *) coco_problem_transformed_get_data(problem);
-  coco_problem_t * inner_problem = coco_problem_transformed_get_inner_problem(problem);
-
   size_t i;
+  double y_logged;
+  logger_bbob_data_t *logger = (logger_bbob_data_t *) coco_problem_transformed_get_data(problem);
+  coco_problem_t *inner_problem = coco_problem_transformed_get_inner_problem(problem);
+  const int is_feasible = problem->number_of_constraints <= 0
+                            || coco_is_feasible(inner_problem, x, NULL);
 
   if (!logger->is_initialized) {
     logger_bbob_initialize(logger, inner_problem);
@@ -18847,36 +21254,72 @@ static void logger_bbob_evaluate(coco_problem_t *problem, const double *x, doubl
     coco_debug("%4lu: ", (unsigned long) inner_problem->suite_dep_index);
     coco_debug("on problem %s ... ", coco_problem_get_id(inner_problem));
   }
-  coco_evaluate_function(inner_problem, x, y);
+  
+  coco_evaluate_function(inner_problem, x, y); /* fulfill contract as "being" a coco evaluate function */
+  
+  logger->number_of_evaluations_constraints = coco_problem_get_evaluations_constraints(problem);
+  logger->number_of_evaluations++; /* could be != coco_problem_get_evaluations(problem) for non-anytime logging? */
+  logger->written_last_eval = 0; /* flag whether the current evaluation was logged? */
   logger->last_fvalue = y[0];
-  logger->written_last_eval = 0;
-  if (logger->number_of_evaluations == 0 || y[0] < logger->best_fvalue) {
-    logger->best_fvalue = y[0];
+
+  y_logged = y[0];
+  if (coco_is_nan(y_logged))
+    y_logged = fvalue_logged_for_nan;
+  else if (coco_is_inf(y_logged))
+    y_logged = fvalue_logged_for_infinite;
+  /* do sanity check */
+  if (is_feasible)  /* infeasible solutions can have much better y0 values */
+    assert(y_logged + 1e-13 >= logger->optimal_fvalue);
+
+  /* Update logger state.
+   *   at logger->number_of_evaluations == 1 the logger->best_fvalue is not inialized,
+   *   also compare to y_logged to not potentially be thrown off by weird values in y[0]
+   */
+  if (logger->number_of_evaluations == 1 || (is_feasible && y_logged < logger->best_fvalue)) {
+    if (is_feasible)
+      logger->best_fvalue = y_logged;
+    else  /* can only be the case in the first evaluation */
+      logger->best_fvalue = fvalue_logged_for_infeasible;
     for (i = 0; i < problem->number_of_variables; i++)
-      logger->best_solution[i] = x[i];
-  }
-  logger->number_of_evaluations++;
-
-  /* Add sanity check for optimal f value */
-  assert(y[0] + 1e-13 >= logger->optimal_fvalue);
-
-  /* Add a line in the .dat file for each logging target reached. */
-    if (coco_observer_targets_trigger(logger->targets, y[0] - logger->optimal_fvalue)) {
-
-    logger_bbob_write_data(logger->fdata_file, logger->number_of_evaluations, y[0], logger->best_fvalue,
-        logger->optimal_fvalue, x, problem->number_of_variables);
+      logger->best_solution[i] = x[i]; /* may be infeasible in evaluation one */
+  
+    /* Add a line in the .dat file for each logging target reached
+     * by a feasible solution and always at evaluation one
+     */
+    if (logger->number_of_evaluations == 1 || (is_feasible &&
+          coco_observer_targets_trigger(logger->targets,
+                                        logger->best_fvalue - logger->optimal_fvalue))) {
+      logger_bbob_write_data(
+          logger->fdata_file,
+          logger->number_of_evaluations,
+          logger->number_of_evaluations_constraints,
+          y_logged,
+          logger->best_fvalue,
+          logger->optimal_fvalue,
+          x,
+          problem->number_of_variables);
+    }
   }
 
   /* Add a line in the .tdat file each time an fevals trigger is reached.*/
-  if (coco_observer_evaluations_trigger(logger->evaluations, logger->number_of_evaluations)) {
+  if (coco_observer_evaluations_trigger(logger->evaluations, 
+        logger->number_of_evaluations + logger->number_of_evaluations_constraints)) {
+    logger_bbob_write_data(
+        logger->tdata_file,
+        logger->number_of_evaluations,
+        logger->number_of_evaluations_constraints,
+        is_feasible ? y_logged : logger->best_fvalue,
+        logger->best_fvalue,
+        logger->optimal_fvalue,
+        x,
+        problem->number_of_variables);
     logger->written_last_eval = 1;
-    logger_bbob_write_data(logger->tdata_file, logger->number_of_evaluations, y[0], logger->best_fvalue,
-        logger->optimal_fvalue, x, problem->number_of_variables);
   }
 
   /* Flush output so that impatient users can see progress. */
   fflush(logger->fdata_file);
-}
+     
+}  /* end logger_bbob_evaluate */
 
 /**
  * Also serves as a finalize run method so. Must be called at the end
@@ -18896,8 +21339,9 @@ static void logger_bbob_free(void *stuff) {
     		(unsigned long) logger->number_of_evaluations);
   }
   if (logger->index_file != NULL) {
-    fprintf(logger->index_file, ":%lu|%.1e", (unsigned long) logger->number_of_evaluations,
-        logger->best_fvalue - logger->optimal_fvalue);
+    fprintf(logger->index_file, ":%lu|%.1e",
+            (unsigned long) logger->number_of_evaluations,
+            logger->best_fvalue - logger->optimal_fvalue);
     fclose(logger->index_file);
     logger->index_file = NULL;
   }
@@ -18912,9 +21356,11 @@ static void logger_bbob_free(void *stuff) {
      * "instance" of problem for each restart in the beginning
      */
     if (!logger->written_last_eval) {
-      logger_bbob_write_data(logger->tdata_file, logger->number_of_evaluations, logger->last_fvalue,
-          logger->best_fvalue, logger->optimal_fvalue, logger->best_solution, logger->number_of_variables);
-    }
+      logger_bbob_write_data(logger->tdata_file, 
+          logger->number_of_evaluations, logger->number_of_evaluations_constraints,
+          logger->best_fvalue, logger->best_fvalue, logger->optimal_fvalue, 
+          logger->best_solution, logger->number_of_variables);
+	}
     fclose(logger->tdata_file);
     logger->tdata_file = NULL;
   }
@@ -18973,6 +21419,7 @@ static coco_problem_t *logger_bbob(coco_observer_t *observer, coco_problem_t *in
   }
 
   logger_bbob->number_of_evaluations = 0;
+  logger_bbob->number_of_evaluations_constraints = 0;
   logger_bbob->best_solution = coco_allocate_vector(inner_problem->number_of_variables);
   /* TODO: the following inits are just to be in the safe side and
    * should eventually be removed. Some fields of the bbob_logger struct
@@ -18980,10 +21427,10 @@ static coco_problem_t *logger_bbob(coco_observer_t *observer, coco_problem_t *in
    */
   logger_bbob->function_id = coco_problem_get_suite_dep_function(inner_problem);
   logger_bbob->instance_id = coco_problem_get_suite_dep_instance(inner_problem);
-  logger_bbob->written_last_eval = 1;
+  logger_bbob->written_last_eval = 0;
   logger_bbob->last_fvalue = DBL_MAX;
   logger_bbob->is_initialized = 0;
-
+    
   /* Initialize triggers based on target values and number of evaluations */
   logger_bbob->targets = coco_observer_targets(observer->number_target_triggers, observer->target_precision);
   logger_bbob->evaluations = coco_observer_evaluations(observer->base_evaluation_triggers, inner_problem->number_of_variables);
@@ -18995,7 +21442,7 @@ static coco_problem_t *logger_bbob(coco_observer_t *observer, coco_problem_t *in
   return problem;
 }
 
-#line 370 "code-experiments/src/coco_observer.c"
+#line 353 "code-experiments/src/coco_observer.c"
 #line 1 "code-experiments/src/logger_biobj.c"
 /**
  * @file logger_biobj.c
@@ -20122,7 +22569,7 @@ static void logger_biobj_free(void *logger);
 static void observer_biobj(coco_observer_t *observer, const char *options, coco_option_keys_t **option_keys) {
 
   observer_biobj_data_t *observer_biobj;
-  char string_value[COCO_PATH_MAX];
+  char string_value[COCO_PATH_MAX + 1];
 
   /* Sets the valid keys for bbob-biobj observer options
    * IMPORTANT: This list should be up-to-date with the code and the documentation */
@@ -20596,7 +23043,7 @@ static logger_biobj_indicator_t *logger_biobj_indicator(const logger_biobj_data_
   indicator->evaluations = coco_observer_evaluations(observer->base_evaluation_triggers, problem->number_of_variables);
 
   /* Prepare the info file */
-  path_name = coco_allocate_string(COCO_PATH_MAX);
+  path_name = coco_allocate_string(COCO_PATH_MAX + 1);
   memcpy(path_name, observer->result_folder, strlen(observer->result_folder) + 1);
   coco_create_directory(path_name);
   file_name = coco_strdupf("%s_%s.info", problem->problem_type, indicator_name);
@@ -20611,7 +23058,7 @@ static logger_biobj_indicator_t *logger_biobj_indicator(const logger_biobj_data_
   coco_free_memory(path_name);
 
   /* Prepare the tdat file */
-  path_name = coco_allocate_string(COCO_PATH_MAX);
+  path_name = coco_allocate_string(COCO_PATH_MAX + 1);
   memcpy(path_name, observer->result_folder, strlen(observer->result_folder) + 1);
   coco_join_path(path_name, COCO_PATH_MAX, problem->problem_type, NULL);
   coco_create_directory(path_name);
@@ -20627,7 +23074,7 @@ static logger_biobj_indicator_t *logger_biobj_indicator(const logger_biobj_data_
   coco_free_memory(path_name);
 
   /* Prepare the dat file */
-  path_name = coco_allocate_string(COCO_PATH_MAX);
+  path_name = coco_allocate_string(COCO_PATH_MAX + 1);
   memcpy(path_name, observer->result_folder, strlen(observer->result_folder) + 1);
   coco_join_path(path_name, COCO_PATH_MAX, problem->problem_type, NULL);
   coco_create_directory(path_name);
@@ -21027,7 +23474,7 @@ static coco_problem_t *logger_biobj(coco_observer_t *observer, coco_problem_t *i
       (logger_biobj->log_nondom_mode == LOG_NONDOM_FINAL)) {
 
     /* Create the path to the file */
-    path_name = coco_allocate_string(COCO_PATH_MAX);
+    path_name = coco_allocate_string(COCO_PATH_MAX + 1);
     memcpy(path_name, observer->result_folder, strlen(observer->result_folder) + 1);
     coco_join_path(path_name, COCO_PATH_MAX, nondom_folder_name, NULL);
     coco_create_directory(path_name);
@@ -21080,7 +23527,7 @@ static coco_problem_t *logger_biobj(coco_observer_t *observer, coco_problem_t *i
 
   return problem;
 }
-#line 371 "code-experiments/src/coco_observer.c"
+#line 354 "code-experiments/src/coco_observer.c"
 #line 1 "code-experiments/src/logger_toy.c"
 /**
  * @file logger_toy.c
@@ -21154,13 +23601,13 @@ static void observer_toy(coco_observer_t *observer, const char *options, coco_op
   observer_toy = (observer_toy_data_t *) coco_allocate_memory(sizeof(*observer_toy));
 
   /* Read file_name and number_of_targets from the options and use them to initialize the observer */
-  string_value = coco_allocate_string(COCO_PATH_MAX);
+  string_value = coco_allocate_string(COCO_PATH_MAX + 1);
   if (coco_options_read_string(options, "file_name", string_value) == 0) {
     strcpy(string_value, "first_hitting_times.dat");
   }
 
   /* Open log_file */
-  file_name = coco_allocate_string(COCO_PATH_MAX);
+  file_name = coco_allocate_string(COCO_PATH_MAX + 1);
   memcpy(file_name, observer->result_folder, strlen(observer->result_folder) + 1);
   coco_create_directory(file_name);
   coco_join_path(file_name, COCO_PATH_MAX, string_value, NULL);
@@ -21270,7 +23717,7 @@ static coco_problem_t *logger_toy(coco_observer_t *observer, coco_problem_t *inn
 
   return problem;
 }
-#line 372 "code-experiments/src/coco_observer.c"
+#line 355 "code-experiments/src/coco_observer.c"
 
 /**
  * Currently, three observers are supported:
@@ -21338,8 +23785,8 @@ coco_observer_t *coco_observer(const char *observer_name, const char *observer_o
     return NULL;
   }
 
-  result_folder = coco_allocate_string(COCO_PATH_MAX);
-  algorithm_name = coco_allocate_string(COCO_PATH_MAX);
+  result_folder = coco_allocate_string(COCO_PATH_MAX + 1);
+  algorithm_name = coco_allocate_string(COCO_PATH_MAX + 1);
   algorithm_info = coco_allocate_string(5 * COCO_PATH_MAX);
   /* Read result_folder, algorithm_name and algorithm_info from the observer_options and use
    * them to initialize the observer */
@@ -21347,7 +23794,7 @@ coco_observer_t *coco_observer(const char *observer_name, const char *observer_o
     strcpy(result_folder, "default");
   }
   /* Create the result_folder inside the "exdata" folder */
-  path = coco_allocate_string(COCO_PATH_MAX);
+  path = coco_allocate_string(COCO_PATH_MAX + 1);
   memcpy(path, outer_folder_name, strlen(outer_folder_name) + 1);
   coco_join_path(path, COCO_PATH_MAX, result_folder, NULL);
   coco_create_unique_directory(&path);
@@ -21422,6 +23869,8 @@ coco_observer_t *coco_observer(const char *observer_name, const char *observer_o
     observer_biobj(observer, observer_options, &additional_option_keys);
   } else if (0 == strcmp(observer_name, "bbob-largescale")) {
     observer_bbob(observer, observer_options, &additional_option_keys);
+  } else if (0 == strcmp(observer_name, "bbob-constrained")) {
+    observer_bbob(observer, observer_options, &additional_option_keys);
   } else {
     coco_warning("Unknown observer!");
     return NULL;
@@ -21462,7 +23911,7 @@ coco_observer_t *coco_observer(const char *observer_name, const char *observer_o
  * @param problem The given COCO problem.
  * @param observer The COCO observer, whose logger will wrap the problem.
  *
- * @returns The observed problem in the form of a new COCO problem instance or the same problem if the
+ * @return The observed problem in the form of a new COCO problem instance or the same problem if the
  * observer is NULL.
  */
 coco_problem_t *coco_problem_add_observer(coco_problem_t *problem, coco_observer_t *observer) {
@@ -21486,7 +23935,7 @@ coco_problem_t *coco_problem_add_observer(coco_problem_t *problem, coco_observer
  * @param problem The observed COCO problem.
  * @param observer The COCO observer, whose logger was wrapping the problem.
  *
- * @returns The unobserved problem as a pointer to the inner problem or the same problem if the problem
+ * @return The unobserved problem as a pointer to the inner problem or the same problem if the problem
  * was not observed.
  */
 coco_problem_t *coco_problem_remove_observer(coco_problem_t *problem, coco_observer_t *observer) {
@@ -21518,6 +23967,27 @@ coco_problem_t *coco_problem_remove_observer(coco_problem_t *problem, coco_obser
 
   return problem_unobserved;
 }
+
+/**
+ * Get the result folder name, which is a unique folder name constructed
+ * from the result_folder option.
+ *
+ * @param observer The COCO observer, whose logger may be wrapping a problem.
+ *
+ * @return The result folder name, where the logger writes its output.
+ */
+const char *coco_observer_get_result_folder(const coco_observer_t *observer) {
+  if (observer == NULL) {
+    coco_warning("coco_observer_get_result_folder: no observer to get result_folder from");
+    return "";
+  }
+  else if (observer->is_active == 0) {
+    coco_warning("coco_observer_get_result_folder: observer is not active, returning empty string");
+    return "";
+  }
+  return observer->result_folder;
+}
+
 #line 1 "code-experiments/src/coco_archive.c"
 /**
  * @file coco_archive.c
@@ -21890,57 +24360,36 @@ void coco_archive_free(coco_archive_t *archive) {
 void coco_error(const char *message, ...) {
   va_list args;
 
-  /* fprintf(stderr, "COCO FATAL ERROR: "); */
-  /* va_start(args, message); */
-  /* vfprintf(stderr, message, args); */
-  /* va_end(args); */
-  /* fprintf(stderr, "\n"); */
-  /* exit(EXIT_FAILURE); */
-
-  char formatted_string[1000L];
+  fprintf(stderr, "COCO FATAL ERROR: ");
   va_start(args, message);
-  vsprintf(formatted_string, message, args);
+  vfprintf(stderr, message, args);
   va_end(args);
-  Rf_error("COCO FATAL ERROR: %s", formatted_string);
+  fprintf(stderr, "\n");
+  exit(EXIT_FAILURE);
 }
 
 void coco_warning(const char *message, ...) {
   va_list args;
 
-  /* if (coco_log_level >= COCO_WARNING) { */
-  /*   fprintf(stderr, "COCO WARNING: "); */
-  /*   va_start(args, message); */
-  /*   vfprintf(stderr, message, args); */
-  /*   va_end(args); */
-  /*   fprintf(stderr, "\n"); */
-  /* } */
-
   if (coco_log_level >= COCO_WARNING) {
-    char formatted_string[1000L];
+    fprintf(stderr, "COCO WARNING: ");
     va_start(args, message);
-    vsprintf(formatted_string, message, args);
+    vfprintf(stderr, message, args);
     va_end(args);
-    Rf_warning("COCO WARNING: %s", formatted_string);
+    fprintf(stderr, "\n");
   }
 }
 
 void coco_info(const char *message, ...) {
   va_list args;
 
-  /* if (coco_log_level >= COCO_INFO) { */
-  /*   fprintf(stdout, "COCO INFO: "); */
-  /*   va_start(args, message); */
-  /*   vfprintf(stdout, message, args); */
-  /*   va_end(args); */
-  /*   fprintf(stdout, "\n"); */
-  /*   fflush(stdout); */
-  /* } */
   if (coco_log_level >= COCO_INFO) {
-    char formatted_string[1000L];
+    fprintf(stdout, "COCO INFO: ");
     va_start(args, message);
-    vsprintf(formatted_string, message, args);
+    vfprintf(stdout, message, args);
     va_end(args);
-    Rprintf("COCO INFO: %s", formatted_string);
+    fprintf(stdout, "\n");
+    fflush(stdout);
   }
 }
 
@@ -21951,40 +24400,24 @@ void coco_info(const char *message, ...) {
 void coco_info_partial(const char *message, ...) {
   va_list args;
 
-  /* if (coco_log_level >= COCO_INFO) { */
-  /*   va_start(args, message); */
-  /*   vfprintf(stdout, message, args); */
-  /*   va_end(args); */
-  /*   fflush(stdout); */
-  /* } */
-
   if (coco_log_level >= COCO_INFO) {
-    char formatted_string[1000L];
     va_start(args, message);
-    vsprintf(formatted_string, message, args);
+    vfprintf(stdout, message, args);
     va_end(args);
-    Rprintf(formatted_string);
+    fflush(stdout);
   }
 }
 
 void coco_debug(const char *message, ...) {
   va_list args;
 
-  /* if (coco_log_level >= COCO_DEBUG) { */
-  /*   fprintf(stdout, "COCO DEBUG: "); */
-  /*   va_start(args, message); */
-  /*   vfprintf(stdout, message, args); */
-  /*   va_end(args); */
-  /*   fprintf(stdout, "\n"); */
-  /*   fflush(stdout); */
-  /* } */
-
   if (coco_log_level >= COCO_DEBUG) {
-    char formatted_string[1000L];
+    fprintf(stdout, "COCO DEBUG: ");
     va_start(args, message);
-    vsprintf(formatted_string, message, args);
+    vfprintf(stdout, message, args);
     va_end(args);
-    Rprintf("COCO DEBUG: %s", formatted_string);
+    fprintf(stdout, "\n");
+    fflush(stdout);
   }
 }
 
